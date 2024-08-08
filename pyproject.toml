@@ -7,7 +7,7 @@ authors = [
 ]
 dependencies = [
     "tornado==6.2.0 ; python_version=='3.7'",
-    "tornado==6.4.0 ; python_version>='3.8'",
+    "tornado==6.4.1 ; python_version>='3.8'",
     "pyserial==3.4",
     "pyserial-asyncio==0.6",
     "pillow==9.5.0 ; python_version=='3.7'",
@@ -24,7 +24,9 @@ dependencies = [
     "dbus-next==0.2.3",
     "apprise==1.8.0",
     "ldap3==2.9.1",
-    "python-periphery==2.4.1"
+    "python-periphery==2.4.1",
+    "importlib_metadata==6.7.0 ; python_version=='3.7'",
+    "importlib_metadata==8.2.0 ; python_version>='3.8'"
 ]
 requires-python = ">=3.7"
 readme = "README.md"
@@ -39,6 +41,7 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 
 [project.urls]
@@ -48,9 +51,13 @@ documentation = "https://moonraker.readthedocs.io"
 changelog = "https://moonraker.readthedocs.io/en/latest/changelog/"
 
 [project.optional-dependencies]
-msgspec=["msgspec>=0.18.4 ; python_version>='3.8'"]
-uvloop=["uvloop>=0.17.0"]
-speedups = ["moonraker[msgspec,uvloop]"]
+msgspec = ["msgspec>=0.18.4 ; python_version>='3.8'"]
+uvloop = ["uvloop>=0.17.0"]
+speedups = [
+    "msgspec>=0.18.4 ; python_version>='3.8'",
+    "uvloop>=0.17.0"
+]
+dev = ["pre-commit"]
 
 [tool.pdm.version]
 source = "scm"
@@ -60,8 +67,12 @@ write_template = "__version__ = '{}'\n"
 [tool.pdm.build]
 excludes = ["./**/.git", "moonraker/moonraker.py"]
 includes = ["moonraker"]
+source-includes = ["scripts"]
 editable-backend = "path"
-custom-hook = "scripts/pdm_build_dist.py"
+custom-hook = "pdm_build.py"
+
+[tool.pdm.build.wheel-data]
+data = [{path = "share/moonraker/**/*", relative-to = "."}]
 
 [project.scripts]
 moonraker = "moonraker.server:main"

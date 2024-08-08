@@ -1849,12 +1849,11 @@ class InotifyObserver(BaseFileSystemObserver):
             old_root.clear_events()
         try:
             root_node = InotifyRootNode(self, root, root_path)
-        except Exception:
-            logging.exception(f"Inotify: failed to create root node '{root}'")
+        except Exception as e:
             self.server.add_warning(
                 f"file_manager: Failed to create inotify root node {root}. "
                 "See moonraker.log for details.",
-                log=False
+                exc_info=e
             )
             return
         self.watched_roots[root] = root_node
@@ -1877,12 +1876,11 @@ class InotifyObserver(BaseFileSystemObserver):
         for root, node in self.watched_roots.items():
             try:
                 evts = node.scan_node()
-            except Exception:
-                logging.exception(f"Inotify: failed to scan root '{root}'")
+            except Exception as e:
                 self.server.add_warning(
                     f"file_manager: Failed to scan inotify root node '{root}'. "
                     "See moonraker.log for details.",
-                    log=False
+                    exc_info=e
                 )
                 continue
             if not evts:
@@ -2280,6 +2278,8 @@ class MetadataStorage:
         self.server = config.get_server()
         self.enable_object_proc = config.getboolean(
             'enable_object_processing', False)
+        self.default_metadata_parser_timeout = config.getfloat(
+            'default_metadata_parser_timeout', 20.)
         self.gc_path = ""
         db.register_local_namespace(METADATA_NAMESPACE)
         self.mddb = db.wrap_namespace(
@@ -2545,13 +2545,13 @@ class MetadataStorage:
         filename = filename.replace("\"", "\\\"")
         cmd = " ".join([sys.executable, METADATA_SCRIPT, "-p",
                         self.gc_path, "-f", f"\"{filename}\""])
-        timeout = 10.
+        timeout = self.default_metadata_parser_timeout
         if ufp_path is not None and os.path.isfile(ufp_path):
-            timeout = 300.
+            timeout = max(timeout, 300.)
             ufp_path.replace("\"", "\\\"")
             cmd += f" -u \"{ufp_path}\""
         if self.enable_object_proc:
-            timeout = 300.
+            timeout = max(timeout, 300.)
             cmd += " --check-objects"
         result = bytearray()
         sc: SCMDComp = self.server.lookup_component('shell_command')
