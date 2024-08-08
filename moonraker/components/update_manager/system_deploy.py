@@ -46,7 +46,7 @@ class PackageDeploy(BaseDeploy):
 
     async def initialize(self) -> Dict[str, Any]:
         storage = await super().initialize()
-        self.available_packages = storage.get('packages', [])
+        # self.available_packages = storage.get('packages', [])
         provider: BasePackageProvider
         try_fallback = True
         if self.use_packagekit:
@@ -100,7 +100,7 @@ class PackageDeploy(BaseDeploy):
             # Do not force a refresh until the server has started
             if self.server.is_running():
                 await self._update_package_cache(force=True)
-            self.available_packages = await self.provider.get_packages()
+            # self.available_packages = await self.provider.get_packages()
             pkg_msg = "\n".join(self.available_packages)
             self.log_info(
                 f"Detected {len(self.available_packages)} package updates:"
