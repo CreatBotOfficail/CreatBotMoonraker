@@ -143,6 +143,7 @@ class KlippyAPI(APITransport):
         script = f'SDCARD_PRINT_FILE FILENAME="{filename}"'
         if wait_klippy_started:
             await self.klippy.wait_started()
+        await self.run_gcode("_START_PRINT_BASE")
         logging.info(f"Requesting Job Start, filename = {filename}")
         ret = await self.run_gcode(script)
         self.server.send_event("klippy_apis:job_start_complete", user)
