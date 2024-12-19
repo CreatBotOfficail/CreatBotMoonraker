@@ -54,6 +54,7 @@ class JobState:
             logging.info(f"Job state initialized: {state}")
 
     async def _status_update(self, data: Dict[str, Any], _: float) -> None:
+        kapis: KlippyAPI = self.server.lookup_component('klippy_apis')
         if 'print_stats' not in data:
             return
         ps = data['print_stats']
@@ -78,6 +79,8 @@ class JobState:
                     f"Job State Changed - Prev State: {old_state}, "
                     f"New State: {new_state}"
                 )
+                if new_state == "cancelled":
+                    await kapis.run_gcode("_CANCEL_PRINT_BASE")
                 # NOTE: Individual job_state events are DEPRECATED.  New modules
                 # should register handlers for "job_state: status_changed" and
                 # match against the JobEvent object provided.
