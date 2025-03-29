@@ -143,10 +143,30 @@ class KlippyAPI(APITransport):
         script = f'SDCARD_PRINT_FILE FILENAME="{filename}"'
         if wait_klippy_started:
             await self.klippy.wait_started()
-        await self.run_gcode("_START_PRINT_BASE")
-        logging.info(f"Requesting Job Start, filename = {filename}")
-        ret = await self.run_gcode(script)
-        self.server.send_event("klippy_apis:job_start_complete", user)
+        try:
+            result = await self.query_objects({"gcode_button _door_detection": None}, None)
+            state = result['gcode_button _door_detection']['state']
+        except (KeyError, TypeError):
+            logging.error("Failed to retrieve 'gcode_button _door_detection' state from query result.")
+            state = None
+        try:
+            func = await self.query_objects({"save_variables": None}, None)
+            res = func['save_variables']['variables']['door_detect']
+        except (KeyError, TypeError):
+            logging.error("Failed to retrieve 'save_variables' state from query result.")
+            state = None
+        if state == None or state == "PRESSED" or res == "Disabled":
+            start_gcode = "_START_PRINT_BASE"
+        else:
+            start_gcode = "_DOOR_START_PRINT_BASE"
+        ret = await self.run_gcode(start_gcode)
+        if start_gcode == "_START_PRINT_BASE":
+            logging.info(f"Requesting Job Start, filename = {filename}")
+            ret = await self.run_gcode(script)
+            self.server.send_event("klippy_apis:job_start_complete", user)
+        else:
+            logging.info("Door is opening, canceling print job.")
+            self.server.send_event("klippy_apis:cancel_requested", user)
         return ret
 
     async def pause_print(
