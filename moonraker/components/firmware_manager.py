@@ -165,7 +165,7 @@ class FirmwareUpdate:
         firmware_mapping = {
             "mcu L_tool": os.path.join(KLIPPER_DIR, "F072_L.bin"),
             "mcu R_tool": os.path.join(KLIPPER_DIR, "F072_R.bin"),
-            "tool": os.path.join(KLIPPER_DIR, "F072.bin")
+            "mcu tool": os.path.join(KLIPPER_DIR, "F072_L.bin")
         }
         for mcu_name, mcu_data in self.mcu_info.items():
             if mcu_data.get('need_update', False) and mcu_name != "mcu":
