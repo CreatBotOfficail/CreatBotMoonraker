@@ -84,30 +84,29 @@ class FirmwareUpdate:
                 logging.exception(f"Failed to enable power button during error recovery: {power_err}")
 
     async def build_mcu_info(self) -> None:
-        retries = 5
+        retries = 0
         printer_info: Dict[str, Any] = {}
         cfg_status: Dict[str, Any] = {}
-        while retries:
-            try:
-                printer_info = await self.klippy_apis.get_klippy_info()
-                cfg_status = await self.klippy_apis.query_objects({'configfile': None})
-            except self.server.error:
-                logging.exception("PanelDue initialization request failed")
-                retries -= 1
-                if not retries:
-                    raise
+        while retries < 5:
+            printer_info = await self.klippy_apis.get_klippy_info()
+            klipper_sta = printer_info.get("state", "")
+            if klipper_sta != "startup":
+                try:
+                    cfg_status = await self.klippy_apis.query_objects({'configfile': None})
+                    config = cfg_status.get('configfile', {}).get('config', {})
+                    self.klipper_version = printer_info.get("software_version", "").split('-')[0]
+                    self._build_basic_mcu_info(config)
+                    await self._update_mcu_versions()
+                    self._check_mcu_update_needed()
+                    logging.info("MCU versions updated successfully.")
+                    break
+                except Exception as e:
+                    retries += 1
+                    await asyncio.sleep(1.)
+            else:
+                logging.info("Klipper is in startup state. Waiting...")
+                retries += 1
                 await asyncio.sleep(1.)
-                continue
-            break
-        config = cfg_status.get('configfile', {}).get('config', {})
-        self.klipper_version = printer_info.get("software_version", "").split('-')[0]
-        try:
-            self._build_basic_mcu_info(config)
-            await self._update_mcu_versions()
-            self._check_mcu_update_needed()
-
-        except Exception as e:
-            logging.exception(f"An error occurred while building MCU info: {e}")
 
     def _build_basic_mcu_info(self, config: Dict[str, Any]) -> None:
         for mcu, value in config.items():
