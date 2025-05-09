@@ -3,6 +3,7 @@ import logging
 import asyncio
 from .flash_tool import FlashTool
 from ..confighelper import ConfigHelper
+from ..common import KlippyState
 from .klippy_apis import KlippyAPI
 
 from typing import (
@@ -29,9 +30,9 @@ class FirmwareUpdate:
         self.klipper_version: str = ""
         self.current_progress = 0
         self.updating = False
-        self.lock = True
+        self.need_check_update = True
         self.server.register_event_handler(
-            "server:klippy_identified", self._handle_ready)
+            "server:klippy_started", self._on_klippy_startup)
 
     @property
     def klippy_apis(self) -> KlippyAPI:
@@ -40,21 +41,18 @@ class FirmwareUpdate:
     def is_updating(self) -> bool:
         return self.updating
 
-    async def _handle_ready(self) -> None:
-        if not self._is_firmware_dir_exists():
+    async def _on_klippy_startup(self, state: KlippyState) -> None:
+        if not self.need_check_update or not self._is_firmware_dir_exists():
             return
         try:
             await self.build_mcu_info()
             logging.info(f"{self.mcu_info}")
         except Exception as e:
             logging.exception(f"An error occurred during the building mcu info process: {e}")
-
-        if self.lock:
-            self.lock = False
-            for mcu_data in self.mcu_info.values():
-                if mcu_data.get('need_update', False):
-                    await self.start_update()
-                    break
+        for mcu_data in self.mcu_info.values():
+            if mcu_data.get('need_update', False):
+                await self.start_update()
+                break
 
     async def _do_klipper_action(self, action: str) -> None:
         try:
@@ -77,36 +75,25 @@ class FirmwareUpdate:
             self.updating = False
         except Exception as e:
             logging.exception(f"An error occurred during the update process: {e}")
-            try:
-                self.updating = False
-                logging.info("Power button enabled due to error recovery.")
-            except Exception as power_err:
-                logging.exception(f"Failed to enable power button during error recovery: {power_err}")
+        self.updating = False
 
     async def build_mcu_info(self) -> None:
-        retries = 0
         printer_info: Dict[str, Any] = {}
         cfg_status: Dict[str, Any] = {}
-        while retries < 5:
+        try:
             printer_info = await self.klippy_apis.get_klippy_info()
-            klipper_sta = printer_info.get("state", "")
-            if klipper_sta != "startup":
-                try:
-                    cfg_status = await self.klippy_apis.query_objects({'configfile': None})
-                    config = cfg_status.get('configfile', {}).get('config', {})
-                    self.klipper_version = printer_info.get("software_version", "").split('-')[0]
-                    self._build_basic_mcu_info(config)
-                    await self._update_mcu_versions()
-                    self._check_mcu_update_needed()
-                    logging.info("MCU versions updated successfully.")
-                    break
-                except Exception as e:
-                    retries += 1
-                    await asyncio.sleep(1.)
-            else:
-                logging.info("Klipper is in startup state. Waiting...")
-                retries += 1
-                await asyncio.sleep(1.)
+            cfg_status = await self.klippy_apis.query_objects({'configfile': None})
+        except self.server.error:
+            logging.exception("PanelDue initialization request failed")
+        config = cfg_status.get('configfile', {}).get('config', {})
+        self.klipper_version = printer_info.get("software_version", "").split('-')[0]
+        try:
+            self._build_basic_mcu_info(config)
+            await self._update_mcu_versions()
+            self._check_mcu_update_needed()
+
+        except Exception as e:
+            logging.exception(f"An error occurred while building MCU info: {e}")
 
     def _build_basic_mcu_info(self, config: Dict[str, Any]) -> None:
         for mcu, value in config.items():
@@ -122,6 +109,7 @@ class FirmwareUpdate:
                 if mcu == "mcu":
                     self.min_version = mcu_data.get('min_firmware_version', "")
                 if mcu_version:
+                    self.need_check_update = False
                     short_version: str = mcu_version.split('-')[0]
                     if short_version.lower().startswith('v'):
                         short_version = short_version[1:]
