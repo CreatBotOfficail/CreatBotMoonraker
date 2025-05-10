@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from .http_client import HttpClient
     from .klippy_connection import KlippyConnection
     from .shell_command import ShellCommandFactory as ShellCommand
+    from .firmware_manager import FirmwareUpdate
 
 class PrinterPower:
     def __init__(self, config: ConfigHelper) -> None:
@@ -411,6 +412,12 @@ class PowerDevice:
                         raise self.server.error(
                             f"Unable to change power for {self.name} "
                             "while printing")
+                updata: FirmwareUpdate
+                updata = self.server.lookup_component("firmware_manager")
+                if updata.is_updating():
+                    raise self.server.error(
+                        f"Unable to change power for {self.name} "
+                        "while updating")
                 ret = self.set_power(req)
                 if ret is not None:
                     await ret
