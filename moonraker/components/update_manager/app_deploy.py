@@ -258,6 +258,9 @@ class AppDeploy(BaseDeploy):
                 if svc == "klipper":
                     kconn: Klippy = self.server.lookup_component("klippy_connection")
                     svc = kconn.unit_name
+                    firmware_manager = self.server.lookup_component("firmware_manager", None)
+                    if firmware_manager is not None:
+                        firmware_manager.need_check_update = True
                 await machine.do_service_action("restart", svc)
 
     async def _read_system_dependencies(self) -> List[str]:
