@@ -118,6 +118,8 @@ class FirmwareUpdate:
                 logging.error(f"Error querying {mcu}: {e}")
 
     def _compare_versions(self, version1, version2):
+        if not version1 or not version2:
+            return 0
         v1_parts = [int(part) for part in version1.split('.') if part]
         v2_parts = [int(part) for part in version2.split('.') if part]
 
@@ -139,6 +141,9 @@ class FirmwareUpdate:
         logging.info(f"klipper version: {self.klipper_version}")
         for mcu in self.mcu_info:
             mcu_version = self.mcu_info[mcu].get('mcu_version', "")
+            if not mcu_version:
+                self.mcu_info[mcu]['need_update'] = False
+                continue
 
             mcu_vs_min = self._compare_versions(mcu_version, self.min_version)
             mcu_vs_klipper = self._compare_versions(mcu_version, self.klipper_version)
