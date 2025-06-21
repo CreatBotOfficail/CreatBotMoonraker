@@ -138,8 +138,7 @@ class ZeroconfRegistrar:
             name = f"{instance_name} ({host})"
             if len(name) > 64:
                 name = instance_name
-            await self.ssdp_server.start()
-            self.ssdp_server.register_service(name, addr, hi["port"])
+            await self.ssdp_server.start(addr, name, hi["port"])
 
     async def close(self) -> None:
         await self.runner.unregister_services([self.service_info])
@@ -151,6 +150,14 @@ class ZeroconfRegistrar:
             addresses = [x for x in self._extract_ip_addresses(network)]
             self.service_info.addresses = addresses
             await self.runner.update_services([self.service_info])
+            if self.ssdp_server is not None:
+                machine: Machine = self.server.lookup_component("machine")
+                addr = machine.public_ip
+                if not addr:
+                    addr = f"{self.mdns_name}.local"
+                name = self.ssdp_server.name
+                hi = self.server.get_host_info()
+                await self.ssdp_server.update_service(addr, name, hi["port"])
 
     def _extract_ip_addresses(self, network: Dict[str, Any]) -> Iterator[bytes]:
         for ifname, ifinfo in network.items():
@@ -208,6 +215,7 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
         self.running: bool = False
         self.close_fut: Optional[asyncio.Future] = None
         self.response_handle: Optional[asyncio.TimerHandle] = None
+        self.transport: Optional[asyncio.DatagramTransport] = None
         eventloop = self.server.get_event_loop()
         self.boot_id = int(eventloop.get_loop_time())
         self.config_id = 1
@@ -242,20 +250,22 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, ip_combo)
         return sock
 
-    async def start(self) -> None:
+    async def start(self, addr: str, name: str, port: int) -> None:
         if self.running:
-            return
+            await self.stop()
         try:
-            sock = self._create_ssdp_socket()
+            sock = self._create_ssdp_socket(source_addr=(addr, 0))
             sock.settimeout(0)
             sock.setblocking(False)
             sock.bind(("", SSDP_ADDR[1]))
             _loop = asyncio.get_running_loop()
             ret = await _loop.create_datagram_endpoint(lambda: self, sock=sock)
             self.transport, _ = ret
-        except (socket.error, OSError):
+            self.running = True
+            self.register_service(name, addr, port)
+        except (socket.error, OSError) as e:
+            logging.error(f"Failed to start SSDP server: {e}")
             return
-        self.running = True
 
     async def stop(self) -> None:
         if not self.running:
@@ -265,18 +275,22 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
         if self.response_handle is not None:
             self.response_handle.cancel()
             self.response_handle = None
-        if self.transport.is_closing():
-            logging.info("Transport already closing")
-            return
-        for notification in self._build_notifications("ssdp:byebye"):
-            self.transport.sendto(notification, SSDP_ADDR)
-        self.close_fut = self.server.get_event_loop().create_future()
-        self.transport.close()
-        try:
-            await asyncio.wait_for(self.close_fut, 2.)
-        except asyncio.TimeoutError:
-            pass
-        self.close_fut = None
+        if self.transport is not None and not self.transport.is_closing():
+            for notification in self._build_notifications("ssdp:byebye"):
+                self.transport.sendto(notification, SSDP_ADDR)
+            self.close_fut = self.server.get_event_loop().create_future()
+            self.transport.close()
+            try:
+                await asyncio.wait_for(self.close_fut, 2.)
+            except asyncio.TimeoutError:
+                logging.warning("Timeout waiting for SSDP transport to close")
+            self.close_fut = None
+        self.transport = None
+
+    async def update_service(self, addr: str, name: str, port: int) -> None:
+        if self.running:
+            await self.stop()
+        await self.start(addr, name, port)
 
     def register_service(
         self, name: str, host_name_or_ip: str, port: int
@@ -292,7 +306,6 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
             model = self.name.rsplit("-", 1)[0]
         if "(" in self.name and ")" in self.name:
             device_name = self.name.split("(", 1)[1].split(")", 1)[0]
-        app: MoonrakerApp = self.server.lookup_component("application")
         self.base_url = f"http://{host_name_or_ip}"
         self.response_headers = [
             f"USN: uuid:{self.serial_number}::upnp:rootdevice::urn:creatbot-com:device:3dprinter:2",
@@ -308,7 +321,7 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
         ]
         self.registered = True
         advertisements = self._build_notifications("ssdp:alive")
-        if self.running:
+        if self.running and self.transport is not None:
             for ad in advertisements:
                 self.transport.sendto(ad, SSDP_ADDR)
         self.advertisements = cycle(advertisements)
@@ -335,7 +348,7 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
         )
 
     def _advertise_presence(self, eventtime: float) -> float:
-        if self.running and self.registered:
+        if self.running and self.registered and self.transport is not None:
             cur_ad = next(self.advertisements)
             self.transport.sendto(cur_ad, SSDP_ADDR)
         delay = random.uniform(SSDP_MAX_AGE / 6., SSDP_MAX_AGE / 3.)
@@ -344,6 +357,7 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
     def connection_made(
         self, transport: asyncio.transports.BaseTransport
     ) -> None:
+        self.transport = transport
         logging.debug("SSDP Server Connected")
 
     def connection_lost(self, exc: Exception | None) -> None:
@@ -396,7 +410,7 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
             self._respond_to_discovery(addr)
 
     def _respond_to_discovery(self, addr: tuple[str | Any, int]) -> None:
-        if not self.running:
+        if not self.running or self.transport is None:
             return
         self.response_handle = None
         response: List[str] = ["HTTP/1.1 200 OK"]
