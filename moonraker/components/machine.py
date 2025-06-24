@@ -264,6 +264,10 @@ class Machine:
     def get_moonraker_service_info(self):
         return dict(self.moonraker_service_info)
 
+    def get_machine_uuid(self) -> str:
+        uuid = self.system_info["cpu_info"]["serial_number"] or str(__import__("uuid").getnode())
+        return uuid.zfill(15)[-15:].upper()
+
     async def wait_for_init(
         self, timeout: Optional[float] = None
     ) -> None:
