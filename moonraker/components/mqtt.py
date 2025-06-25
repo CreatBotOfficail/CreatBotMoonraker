@@ -473,15 +473,15 @@ class MQTTClient(APITransport):
             self.status_cache = {}
             self._publish_status_update(payload, self.last_status_time)
 
-    def _get_topic_handles(self, topic) -> Optional[list]:
+    def _get_topic_handles(self, topic) -> Optional[tuple[list, bool]]:
         if topic in self.subscribed_topics:
-            return self.subscribed_topics[topic][1]
+            return self.subscribed_topics[topic][1], False
         for wildcardTopic, pattern in self.regex_topics_map.items():
             if pattern.match(topic):
                 cb_hdls = self.subscribed_topics[wildcardTopic][1].copy()
                 for cb in cb_hdls:
                     cb.topic = topic
-                return cb_hdls
+                return cb_hdls, True
         else:
             return None
     
@@ -493,9 +493,11 @@ class MQTTClient(APITransport):
         topic = message.topic
         cb_hdls = self._get_topic_handles(topic)
         if cb_hdls:
+            cb_hdls, wildcard = cb_hdls
             for hdl in cb_hdls:
                 self.eventloop.register_callback(
-                    hdl.callback, message.payload)
+                    hdl.callback, message.payload,
+                    *((hdl.topic,) if wildcard else ()))
         else:
             logging.debug(
                 f"Unregistered MQTT Topic Received: {topic}, "
