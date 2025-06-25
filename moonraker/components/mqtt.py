@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from ..common import JsonRPC, APIDefinition
     from ..eventloop import FlexTimer
     from .klippy_apis import KlippyAPI
+    from .machine import Machine
     FlexCallback = Callable[[bytes], Optional[Coroutine]]
     RPCCallback = Callable[..., Coroutine]
 
@@ -341,6 +342,7 @@ class MQTTClient(APITransport):
                 f"Invalid value '{protocol}' for option 'mqtt_protocol' "
                 "in section [mqtt]. Must be one of "
                 f"{MQTT_PROTOCOLS.values()}")
+        self.support_creatcloud = config.getboolean("support_creatcloud", False)
         self.instance_name = config.get('instance_name', socket.gethostname())
         if '+' in self.instance_name or '#' in self.instance_name:
             raise config.error(
@@ -354,6 +356,9 @@ class MQTTClient(APITransport):
         self.publish_split_status = \
             config.getboolean("publish_split_status", False)
         client_id: Optional[str] = config.get("client_id", None)
+        if client_id is None and self.support_creatcloud:
+            machine: Machine = self.server.lookup_component("machine")
+            client_id = machine.get_machine_uuid()
         if PAHO_MQTT_VERSION < (2, 0):
             self.client = ExtPahoClient(client_id, protocol=self.protocol)
         else:
@@ -394,6 +399,16 @@ class MQTTClient(APITransport):
         self.klipper_status_topic = f"{self.instance_name}/klipper/status"
         self.klipper_state_prefix = f"{self.instance_name}/klipper/state"
         self.moonraker_status_topic = f"{self.instance_name}/moonraker/status"
+
+        # CreatCloud API
+        if self.support_creatcloud:
+            self.creatcloud_topic_prefix = "CreatCloud/Klipper"
+            self.api_request_topic = f"{self.creatcloud_topic_prefix}/{client_id}/+/Action"
+            self.api_resp_topic = f"{self.creatcloud_topic_prefix}/{client_id}/000000/Action"
+            self.klipper_status_topic = f"{self.creatcloud_topic_prefix}/{client_id}/Status"
+            self.klipper_state_prefix = f"{self.creatcloud_topic_prefix}/{client_id}/State"
+            self.moonraker_status_topic = f"{self.creatcloud_topic_prefix}/{client_id}/Public"
+
         status_cfg: Dict[str, str] = config.getdict(
             "status_objects", {}, allow_empty_fields=True
         )
@@ -422,9 +437,13 @@ class MQTTClient(APITransport):
 
         self.timestamp_deque: Deque = deque(maxlen=20)
         self.api_qos = config.getint('api_qos', self.qos)
+        if self.support_creatcloud:
+            api_func = self._process_creatcloud_request
+        else:
+            api_func = self._process_api_request
         if config.getboolean("enable_moonraker_api", True):
             self.subscribe_topic(self.api_request_topic,
-                                 self._process_api_request,
+                                 api_func,
                                  self.api_qos)
 
         self.server.register_remote_method("publish_mqtt_topic",
@@ -801,6 +820,12 @@ class MQTTClient(APITransport):
             await self.publish_topic(self.api_resp_topic, response,
                                      self.api_qos)
 
+    async def _process_creatcloud_request(self, payload: bytes, topic: str = None) -> None:
+        rpc: JsonRPC = self.server.lookup_component("jsonrpc")
+        response = await rpc.dispatch(payload, self)
+        if response is not None and topic is not None:
+            await self.publish_topic(topic, response,
+                                     self.api_qos)
     @property
     def transport_type(self) -> TransportType:
         return TransportType.MQTT
