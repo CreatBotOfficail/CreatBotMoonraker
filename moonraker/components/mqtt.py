@@ -222,6 +222,23 @@ class ExtPahoClient(paho_mqtt.Client):
 
         return self._send_connect(self._keepalive)
 
+    # MQTTv5 apply noLocal option by default
+    def subscribe(self, topic, qos=0, options=None):
+        if self._protocol == paho_mqtt.MQTTv5:
+            if options is None:
+                options = paho_mqtt.SubscribeOptions(qos=qos, noLocal=True)
+                qos = 0
+            if isinstance(topic, list):
+                def formatMqttV5Tuple(topic, options):
+                    if isinstance(options, paho_mqtt.SubscribeOptions):
+                        return (topic, options)
+                    elif isinstance(options, int):
+                        if 0 <= options <= 2:
+                            return (topic, paho_mqtt.SubscribeOptions(qos=options, noLocal=True))
+                        raise ValueError(f"Invalid QoS level: {options}")
+                    raise ValueError(f"Invalid options type: {type(options)}")
+                topic = [formatMqttV5Tuple(t, o) for t, o in topic]
+        return super().subscribe(topic, qos, options)
 
 class SubscriptionHandle:
     def __init__(self, topic: str, callback: FlexCallback) -> None:
