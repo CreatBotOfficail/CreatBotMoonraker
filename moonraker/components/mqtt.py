@@ -375,7 +375,7 @@ class MQTTClient(APITransport):
         client_id: Optional[str] = config.get("client_id", None)
         if client_id is None and self.support_creatcloud:
             machine: Machine = self.server.lookup_component("machine")
-            client_id = machine.get_machine_uuid()
+            self.client_id = client_id = machine.get_machine_uuid()
         if PAHO_MQTT_VERSION < (2, 0):
             self.client = ExtPahoClient(client_id, protocol=self.protocol)
         else:
@@ -838,11 +838,45 @@ class MQTTClient(APITransport):
                                      self.api_qos)
 
     async def _process_creatcloud_request(self, payload: bytes, topic: str = None) -> None:
-        rpc: JsonRPC = self.server.lookup_component("jsonrpc")
-        response = await rpc.dispatch(payload, self)
+        try:
+            request: Dict[str, Any] = jsonw.loads(payload)
+            msgVer = request.get("ver")
+            if msgVer == 3: # msg version is 3 or 3.0
+                msgIMEI = request.get("imei")
+                msgCmd = request.get("cmd")
+                msgData = request.get("data")
+                response = request.copy()
+                response["data"] = ""
+
+                if msgIMEI == self.client_id:
+                    if msgCmd == 'API':
+                        rpc: JsonRPC = self.server.lookup_component("jsonrpc")
+                        result = await rpc.dispatch(jsonw.dumps(msgData), self)
+                        response["data"] = jsonw.loads(result)
+                    elif msgCmd == 'SDP':
+                        response["data"] = ""   #TODO SDP
+                    elif msgCmd == 'ICE':
+                        response["data"] = ""   #TODO ICE
+                    else:
+                        response = f"Unknown MQTT message cmd: {msgCmd}"
+                        logging.warning(response)
+                else:
+                    response = f"client_id [{msgIMEI}] does not match"
+                    logging.warning(response)
+            else:
+                response = f"MQTT message version [{msgVer}] is not supported"
+                logging.warning(response)
+        except jsonw.JSONDecodeError:
+            data = payload.decode()
+            response = f"MQTT payload is not valid json: {data}"
+            logging.exception(response)
+        except Exception as e:
+            response = None
+            logging.exception(e)
+
         if response is not None and topic is not None:
-            await self.publish_topic(topic, response,
-                                     self.api_qos)
+            await self.publish_topic(topic, response,  self.api_qos)
+
     @property
     def transport_type(self) -> TransportType:
         return TransportType.MQTT
