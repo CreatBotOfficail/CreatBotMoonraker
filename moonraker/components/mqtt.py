@@ -854,9 +854,11 @@ class MQTTClient(APITransport):
                         result = await rpc.dispatch(jsonw.dumps(msgData), self)
                         response["data"] = jsonw.loads(result)
                     elif msgCmd == 'SDP':
-                        response["data"] = ""   #TODO SDP
-                    elif msgCmd == 'ICE':
-                        response["data"] = ""   #TODO ICE
+                        webrtc_bridge = self.server.lookup_component("webrtc_bridge", None)
+                        if webrtc_bridge:
+                            response["data"] = await webrtc_bridge.handle_sdp(msgData, topic)
+                        else:
+                            response["data"] = {"type": "error", "message": "WebRTC Bridge component not available"}
                     else:
                         response = f"Unknown MQTT message cmd: {msgCmd}"
                         logging.warning(response)
