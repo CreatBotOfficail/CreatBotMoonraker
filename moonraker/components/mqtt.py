@@ -841,11 +841,11 @@ class MQTTClient(APITransport):
         try:
             request: Dict[str, Any] = jsonw.loads(payload)
             msgVer = request.get("ver")
+            response = request.copy()
             if msgVer == 3: # msg version is 3 or 3.0
                 msgIMEI = request.get("imei")
                 msgCmd = request.get("cmd")
                 msgData = request.get("data")
-                response = request.copy()
                 response["data"] = ""
 
                 if msgIMEI == self.client_id:
@@ -860,14 +860,11 @@ class MQTTClient(APITransport):
                         else:
                             response["data"] = {"type": "error", "message": "WebRTC Bridge component not available"}
                     else:
-                        response = f"Unknown MQTT message cmd: {msgCmd}"
-                        logging.warning(response)
+                        response["data"] = f"error: Unknown MQTT message cmd: {msgCmd}"
                 else:
-                    response = f"client_id [{msgIMEI}] does not match"
-                    logging.warning(response)
+                    response["data"] = f"error: MQTT client_id [{msgIMEI}] does not match"
             else:
-                response = f"MQTT message version [{msgVer}] is not supported"
-                logging.warning(response)
+                response["data"] = f"error: MQTT message version [{msgVer}] is not supported"
         except jsonw.JSONDecodeError:
             data = payload.decode()
             response = f"MQTT payload is not valid json: {data}"
