@@ -508,7 +508,20 @@ class Authorization:
         new_hashed_pass = hashlib.pbkdf2_hmac(
             'sha256', new_pass.encode(), salt, HASH_ITER).hex()
         self.users[username].password = new_hashed_pass
+        if username == SUPER_USER:
+            self.trusted_mqtt_clients.clear()
+        jwk_id: Optional[str] = self.users[username].jwk_id
+        self.users[username].jwt_secret = None
+        self.users[username].jwk_id = None
+        if jwk_id is not None:
+            self.public_jwks.pop(jwk_id, None)
         await self._sync_user(username)
+        eventloop = self.server.get_event_loop()
+        eventloop.delay_callback(
+            .005, self.server.send_event,
+             "authorization:user_logged_out",
+            {'username': username}
+        )
         return {
             'username': username,
             'action': "user_password_reset"
