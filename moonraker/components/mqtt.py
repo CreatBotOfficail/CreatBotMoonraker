@@ -43,8 +43,10 @@ if TYPE_CHECKING:
     from ..eventloop import FlexTimer
     from .klippy_apis import KlippyAPI
     from .machine import Machine
+    from .authorization import Authorization
     FlexCallback = Callable[[bytes], Optional[Coroutine]]
     RPCCallback = Callable[..., Coroutine]
+    AuthComp = Optional[Authorization]
 
 PAHO_MQTT_VERSION = tuple([int(p) for p in paho.mqtt.__version__.split(".")])
 DUP_API_REQ_CODE = -10000
@@ -844,23 +846,33 @@ class MQTTClient(APITransport):
             response = request.copy()
             if msgVer == 3: # msg version is 3 or 3.0
                 msgIMEI = request.get("imei")
+                msgUUID = request.get("uuid")
                 msgCmd = request.get("cmd")
                 msgData = request.get("data")
                 response["data"] = ""
 
                 if msgIMEI == self.client_id:
-                    if msgCmd == 'API':
-                        rpc: JsonRPC = self.server.lookup_component("jsonrpc")
-                        result = await rpc.dispatch(jsonw.dumps(msgData), self)
-                        response["data"] = jsonw.loads(result)
-                    elif msgCmd == 'SDP':
-                        webrtc_bridge = self.server.lookup_component("webrtc_bridge", None)
-                        if webrtc_bridge:
-                            response["data"] = await webrtc_bridge.handle_sdp(msgData, topic)
+                    auth: AuthComp = self.server.lookup_component('authorization', None)
+                    if auth is None or auth.check_mqtt(msgUUID) or msgCmd == 'PWD':
+                        if msgCmd == 'PWD':
+                            if auth is not None:
+                                response['data'] = 'OK' if auth.validate_mqtt(msgUUID, msgData) else 'INCORRECT'
+                            else:
+                                response['data'] = 'IGNORE'
+                        elif msgCmd == 'API':
+                            rpc: JsonRPC = self.server.lookup_component("jsonrpc")
+                            result = await rpc.dispatch(jsonw.dumps(msgData), self)
+                            response["data"] = jsonw.loads(result)
+                        elif msgCmd == 'SDP':
+                            webrtc_bridge = self.server.lookup_component("webrtc_bridge", None)
+                            if webrtc_bridge:
+                                response["data"] = await webrtc_bridge.handle_sdp(msgData, topic)
+                            else:
+                                response["data"] = {"type": "error", "message": "WebRTC Bridge component not available"}
                         else:
-                            response["data"] = {"type": "error", "message": "WebRTC Bridge component not available"}
+                            response["data"] = f"error: Unknown MQTT message cmd: {msgCmd}"
                     else:
-                        response["data"] = f"error: Unknown MQTT message cmd: {msgCmd}"
+                        response['data'] = f"error: MQTT UserID [{msgUUID}] needs authentication"
                 else:
                     response["data"] = f"error: MQTT client_id [{msgIMEI}] does not match"
             else:

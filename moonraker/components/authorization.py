@@ -182,6 +182,7 @@ class Authorization:
         self.trusted_ips: List[IPAddr] = []
         self.trusted_ranges: List[IPNetwork] = []
         self.trusted_domains: List[str] = []
+        self.trusted_mqtt_clients: List[str] = [] # MQTT client id
         for val in config.getlist('trusted_clients', []):
             # Check IP address
             try:
@@ -718,6 +719,22 @@ class Authorization:
         if api_key and api_key == self.api_key:
             return self.users[API_USER]
         raise self.server.error("Invalid API Key", 401)
+
+    def validate_mqtt(self, uuid: str, data: Dict) -> bool:
+        username: str = data.get("username")
+        password: str = data.get("password")
+        if username != SUPER_USER:
+            return False
+        user_info = self.users[username]
+        salt = bytes.fromhex(user_info.salt)
+        hashed_pass = hashlib.pbkdf2_hmac(
+            'sha256', password.encode(), salt, HASH_ITER).hex()
+        if (valid := hashed_pass == user_info.password):
+            self.trusted_mqtt_clients.append(uuid)
+        return valid
+
+    def check_mqtt(self, uuid: str) -> bool:
+        return uuid in self.trusted_mqtt_clients
 
     def _load_private_key(self, secret: str) -> Signer:
         try:
