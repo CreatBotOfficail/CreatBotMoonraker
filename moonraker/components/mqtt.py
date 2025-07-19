@@ -42,12 +42,8 @@ if TYPE_CHECKING:
     from ..common import JsonRPC, APIDefinition
     from ..eventloop import FlexTimer
     from .klippy_apis import KlippyAPI
-    from .machine import Machine
-    from .authorization import Authorization
-    from .safe_options import SafeOptions
     FlexCallback = Callable[[bytes], Optional[Coroutine]]
     RPCCallback = Callable[..., Coroutine]
-    AuthComp = Optional[Authorization]
 
 PAHO_MQTT_VERSION = tuple([int(p) for p in paho.mqtt.__version__.split(".")])
 DUP_API_REQ_CODE = -10000
@@ -362,8 +358,6 @@ class MQTTClient(APITransport):
                 f"Invalid value '{protocol}' for option 'mqtt_protocol' "
                 "in section [mqtt]. Must be one of "
                 f"{MQTT_PROTOCOLS.values()}")
-        self.support_creatcloud = config.getboolean("support_creatcloud", False)
-        self.mqtt_enabled: Optional[bool] = config.getboolean("enable", None)
         self.instance_name = config.get('instance_name', socket.gethostname())
         if '+' in self.instance_name or '#' in self.instance_name:
             raise config.error(
@@ -377,9 +371,7 @@ class MQTTClient(APITransport):
         self.publish_split_status = \
             config.getboolean("publish_split_status", False)
         client_id: Optional[str] = config.get("client_id", None)
-        if client_id is None and self.support_creatcloud:
-            machine: Machine = self.server.lookup_component("machine")
-            self.client_id = client_id = machine.get_machine_uuid()
+        self.client_id = client_id
         if PAHO_MQTT_VERSION < (2, 0):
             self.client = ExtPahoClient(client_id, protocol=self.protocol)
         else:
@@ -414,32 +406,12 @@ class MQTTClient(APITransport):
             transports=ep_transports
         )
 
-        # Register CreatCloud Interface
-        self.server.register_endpoint(
-            "/server/mqtt/enable", RequestType.POST, self._handle_mqtt_enable,
-            transports=ep_transports, auth_required=False
-        )
-        self.server.register_endpoint(
-            "/server/mqtt/user", RequestType.POST, self._handle_mqtt_user,
-            transports=ep_transports, auth_required=False
-        )
-
         # Subscribe to API requests
         self.api_request_topic = f"{self.instance_name}/moonraker/api/request"
         self.api_resp_topic = f"{self.instance_name}/moonraker/api/response"
         self.klipper_status_topic = f"{self.instance_name}/klipper/status"
         self.klipper_state_prefix = f"{self.instance_name}/klipper/state"
         self.moonraker_status_topic = f"{self.instance_name}/moonraker/status"
-
-        # CreatCloud API
-        if self.support_creatcloud:
-            self.creatcloud_topic_prefix = "CreatCloud/Klipper"
-            self.api_request_topic = f"{self.creatcloud_topic_prefix}/{client_id}/+/Action"
-            self.api_resp_topic = f"{self.creatcloud_topic_prefix}/{client_id}/000000/Action"
-            self.klipper_status_topic = f"{self.creatcloud_topic_prefix}/{client_id}/Status"
-            self.klipper_state_prefix = f"{self.creatcloud_topic_prefix}/{client_id}/State"
-            self.moonraker_status_topic = f"{self.creatcloud_topic_prefix}/{client_id}/Public"
-
         status_cfg: Dict[str, str] = config.getdict(
             "status_objects", {}, allow_empty_fields=True
         )
@@ -468,13 +440,9 @@ class MQTTClient(APITransport):
 
         self.timestamp_deque: Deque = deque(maxlen=20)
         self.api_qos = config.getint('api_qos', self.qos)
-        if self.support_creatcloud:
-            api_func = self._process_creatcloud_request
-        else:
-            api_func = self._process_api_request
         if config.getboolean("enable_moonraker_api", True):
             self.subscribe_topic(self.api_request_topic,
-                                 api_func,
+                                 self._process_api_request,
                                  self.api_qos)
 
         self.server.register_remote_method("publish_mqtt_topic",
@@ -501,76 +469,6 @@ class MQTTClient(APITransport):
         self.connect_task = self.eventloop.create_task(
             self._do_reconnect(first=True)
         )
-
-    def _get_mqtt_options(self) -> Optional[Dict[str, Any]]:
-        safeOptions: SafeOptions = self.server.lookup_component("safe_options")
-        return safeOptions.get("mqtt")
-
-    async def _update_mqtt_options(self, key: str, value: Any) -> None:
-        safeOptions: SafeOptions = self.server.lookup_component("safe_options")
-        if not safeOptions.has_section("mqtt"):
-            # the database needs to be initialized
-            await safeOptions.init_section("mqtt", {
-                "actived": (False, False),
-                "username": (True, ""),
-                "password": (True, ""),
-            })
-        await safeOptions.update_option("mqtt", key, value)
-
-    def _check_mqtt_enabled(self) -> bool:
-        if self.mqtt_enabled is not None:
-            return self.mqtt_enabled
-
-        mqtt_options = self._get_mqtt_options()
-        return False if mqtt_options is None else mqtt_options["actived"]
-
-    async def _handle_mqtt_enable(self, web_request: WebRequest) -> Dict[str, Any]:
-        active = web_request.get_boolean("active")
-        curActive = self._check_mqtt_enabled()
-
-        # update databse safeOptions
-        mqtt_options = self._get_mqtt_options()
-        if mqtt_options is None or mqtt_options["actived"] is not active:
-            await self._update_mqtt_options("actived", active)
-
-        # set the config value temporarily
-        if self.mqtt_enabled is not None:
-            self.mqtt_enabled = active
-
-        if active is not curActive:
-            # switch the MQTT connection state.
-            logging.info(f"MQTT Server Change to {'Enable' if active else 'Disable'}")
-            if active and not self.is_connected() and self.connect_task is None:
-                self.connect_task = self.eventloop.create_task(
-                    self._do_reconnect(first=True)
-                )
-            else:
-                await self.close()
-        return {"result": "success", "actived": active}
-
-    async def _handle_mqtt_user(self, web_request: WebRequest) -> Dict[str, Any]:
-        username = web_request.get_str("username")
-        password = web_request.get_str("password")
-
-        # update databse safeOptions
-        await self._update_mqtt_options("username", username)
-        await self._update_mqtt_options("password", password)
-        mqtt_options = self._get_mqtt_options()
-        new_username = mqtt_options["username"]
-        new_password = mqtt_options["password"]
-
-        if self.user_name != new_username or self.password != new_password:
-            # update username and password
-            self.user_name = new_username
-            self.password = new_password
-
-            # MQTT reconnect with new credential
-            logging.info("MQTT Server Restart [Username/Password Change]")
-            await self.close()
-            self.client.username_pw_set(self.user_name, self.password)
-            self.connect_task = self.eventloop.create_task(self._do_reconnect(first=True))
-
-        return {"result": "success", "actived": self._check_mqtt_enabled()}
 
     async def _handle_klippy_started(self, state: KlippyState) -> None:
         if self.status_objs:
@@ -704,7 +602,7 @@ class MQTTClient(APITransport):
     async def _do_reconnect(self, first: bool = False) -> None:
         logging.info("Attempting MQTT Connect/Reconnect")
         last_err: Exception = Exception()
-        while self._check_mqtt_enabled():
+        while True:
             if not first:
                 try:
                     await asyncio.sleep(2.)
@@ -920,55 +818,6 @@ class MQTTClient(APITransport):
         if response is not None:
             await self.publish_topic(self.api_resp_topic, response,
                                      self.api_qos)
-
-    async def _process_creatcloud_request(self, payload: bytes, topic: str = None) -> None:
-        try:
-            request: Dict[str, Any] = jsonw.loads(payload)
-            msgVer = request.get("ver")
-            response = request.copy()
-            if msgVer == 3: # msg version is 3 or 3.0
-                msgIMEI = request.get("imei")
-                msgUUID = request.get("uuid")
-                msgCmd = request.get("cmd")
-                msgData = request.get("data")
-                response["data"] = ""
-
-                if msgIMEI == self.client_id:
-                    auth: AuthComp = self.server.lookup_component('authorization', None)
-                    if auth is None or auth.check_mqtt(msgUUID) or msgCmd == 'PWD':
-                        if msgCmd == 'PWD':
-                            if auth is not None:
-                                response['data'] = 'OK' if auth.validate_mqtt(msgUUID, msgData) else 'INCORRECT'
-                            else:
-                                response['data'] = 'IGNORE'
-                        elif msgCmd == 'API':
-                            rpc: JsonRPC = self.server.lookup_component("jsonrpc")
-                            result = await rpc.dispatch(jsonw.dumps(msgData), self)
-                            response["data"] = jsonw.loads(result)
-                        elif msgCmd == 'SDP':
-                            webrtc_bridge = self.server.lookup_component("webrtc_bridge", None)
-                            if webrtc_bridge:
-                                response["data"] = await webrtc_bridge.handle_sdp(msgData, topic)
-                            else:
-                                response["data"] = {"type": "error", "message": "WebRTC Bridge component not available"}
-                        else:
-                            response["data"] = f"error: Unknown MQTT message cmd: {msgCmd}"
-                    else:
-                        response['data'] = f"error: MQTT UserID [{msgUUID}] needs authentication"
-                else:
-                    response["data"] = f"error: MQTT client_id [{msgIMEI}] does not match"
-            else:
-                response["data"] = f"error: MQTT message version [{msgVer}] is not supported"
-        except jsonw.JSONDecodeError:
-            data = payload.decode()
-            response = f"MQTT payload is not valid json: {data}"
-            logging.exception(response)
-        except Exception as e:
-            response = None
-            logging.exception(e)
-
-        if response is not None and topic is not None:
-            await self.publish_topic(topic, response,  self.api_qos)
 
     @property
     def transport_type(self) -> TransportType:
