@@ -419,6 +419,10 @@ class MQTTClient(APITransport):
             "/server/mqtt/enable", RequestType.POST, self._handle_mqtt_enable,
             transports=ep_transports, auth_required=False
         )
+        self.server.register_endpoint(
+            "/server/mqtt/user", RequestType.POST, self._handle_mqtt_user,
+            transports=ep_transports, auth_required=False
+        )
 
         # Subscribe to API requests
         self.api_request_topic = f"{self.instance_name}/moonraker/api/request"
@@ -543,6 +547,30 @@ class MQTTClient(APITransport):
             else:
                 await self.close()
         return {"result": "success", "actived": active}
+
+    async def _handle_mqtt_user(self, web_request: WebRequest) -> Dict[str, Any]:
+        username = web_request.get_str("username")
+        password = web_request.get_str("password")
+
+        # update databse safeOptions
+        await self._update_mqtt_options("username", username)
+        await self._update_mqtt_options("password", password)
+        mqtt_options = self._get_mqtt_options()
+        new_username = mqtt_options["username"]
+        new_password = mqtt_options["password"]
+
+        if self.user_name != new_username or self.password != new_password:
+            # update username and password
+            self.user_name = new_username
+            self.password = new_password
+
+            # MQTT reconnect with new credential
+            logging.info("MQTT Server Restart [Username/Password Change]")
+            await self.close()
+            self.client.username_pw_set(self.user_name, self.password)
+            self.connect_task = self.eventloop.create_task(self._do_reconnect(first=True))
+
+        return {"result": "success", "actived": self._check_mqtt_enabled()}
 
     async def _handle_klippy_started(self, state: KlippyState) -> None:
         if self.status_objs:
