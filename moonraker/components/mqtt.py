@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from .klippy_apis import KlippyAPI
     from .machine import Machine
     from .authorization import Authorization
+    from .safe_options import SafeOptions
     FlexCallback = Callable[[bytes], Optional[Coroutine]]
     RPCCallback = Callable[..., Coroutine]
     AuthComp = Optional[Authorization]
@@ -362,6 +363,7 @@ class MQTTClient(APITransport):
                 "in section [mqtt]. Must be one of "
                 f"{MQTT_PROTOCOLS.values()}")
         self.support_creatcloud = config.getboolean("support_creatcloud", False)
+        self.mqtt_enabled: Optional[bool] = config.getboolean("enable", None)
         self.instance_name = config.get('instance_name', socket.gethostname())
         if '+' in self.instance_name or '#' in self.instance_name:
             raise config.error(
@@ -410,6 +412,12 @@ class MQTTClient(APITransport):
             "/server/mqtt/subscribe", RequestType.POST,
             self._handle_subscription_request,
             transports=ep_transports
+        )
+
+        # Register CreatCloud Interface
+        self.server.register_endpoint(
+            "/server/mqtt/enable", RequestType.POST, self._handle_mqtt_enable,
+            transports=ep_transports, auth_required=False
         )
 
         # Subscribe to API requests
@@ -489,6 +497,52 @@ class MQTTClient(APITransport):
         self.connect_task = self.eventloop.create_task(
             self._do_reconnect(first=True)
         )
+
+    def _get_mqtt_options(self) -> Optional[Dict[str, Any]]:
+        safeOptions: SafeOptions = self.server.lookup_component("safe_options")
+        return safeOptions.get("mqtt")
+
+    async def _update_mqtt_options(self, key: str, value: Any) -> None:
+        safeOptions: SafeOptions = self.server.lookup_component("safe_options")
+        if not safeOptions.has_section("mqtt"):
+            # the database needs to be initialized
+            await safeOptions.init_section("mqtt", {
+                "actived": (False, False),
+                "username": (True, ""),
+                "password": (True, ""),
+            })
+        await safeOptions.update_option("mqtt", key, value)
+
+    def _check_mqtt_enabled(self) -> bool:
+        if self.mqtt_enabled is not None:
+            return self.mqtt_enabled
+
+        mqtt_options = self._get_mqtt_options()
+        return False if mqtt_options is None else mqtt_options["actived"]
+
+    async def _handle_mqtt_enable(self, web_request: WebRequest) -> Dict[str, Any]:
+        active = web_request.get_boolean("active")
+        curActive = self._check_mqtt_enabled()
+
+        # update databse safeOptions
+        mqtt_options = self._get_mqtt_options()
+        if mqtt_options is None or mqtt_options["actived"] is not active:
+            await self._update_mqtt_options("actived", active)
+
+        # set the config value temporarily
+        if self.mqtt_enabled is not None:
+            self.mqtt_enabled = active
+
+        if active is not curActive:
+            # switch the MQTT connection state.
+            logging.info(f"MQTT Server Change to {'Enable' if active else 'Disable'}")
+            if active and not self.is_connected() and self.connect_task is None:
+                self.connect_task = self.eventloop.create_task(
+                    self._do_reconnect(first=True)
+                )
+            else:
+                await self.close()
+        return {"result": "success", "actived": active}
 
     async def _handle_klippy_started(self, state: KlippyState) -> None:
         if self.status_objs:
@@ -622,7 +676,7 @@ class MQTTClient(APITransport):
     async def _do_reconnect(self, first: bool = False) -> None:
         logging.info("Attempting MQTT Connect/Reconnect")
         last_err: Exception = Exception()
-        while True:
+        while self._check_mqtt_enabled():
             if not first:
                 try:
                     await asyncio.sleep(2.)
