@@ -39,17 +39,19 @@ class CreatCloud:
         # Reinitialize the client
         if self.mqtt.client_id is None:
             client_id = self.mqtt.client_id = machine.get_machine_uuid()
-            self.mqtt.client.reinitialise(client_id)
-            self.mqtt.client.on_connect = self.mqtt._on_connect
-            self.mqtt.client.on_message = self.mqtt._on_message
-            self.mqtt.client.on_disconnect = self.mqtt._on_disconnect
-            self.mqtt.client.on_publish = self.mqtt._on_publish
-            self.mqtt.client.on_subscribe = self.mqtt._on_subscribe
-            self.mqtt.client.on_unsubscribe = self.mqtt._on_unsubscribe
+            self.mqtt.client._client_id = client_id
         else:
             client_id = self.mqtt.client_id
             self.server.add_warning(
                 "CreatCloud client_id conflict risk (using specified ID)")
+
+        creatcloud_options = self._get_creatcloud_options()
+        if creatcloud_options is None:
+            self.mqtt.user_name = None
+            self.mqtt.password = None
+        else:
+            self.mqtt.user_name = creatcloud_options["username"]
+            self.mqtt.password = creatcloud_options["password"]
 
         self.creatcloud_topic_prefix = "CreatCloud/Klipper"
         self.mqtt.api_request_topic = f"{self.creatcloud_topic_prefix}/{client_id}/+/Action"
@@ -82,11 +84,14 @@ class CreatCloud:
         pass
 
     async def _creatcloud_reconnect(self, first: bool = False) -> None:
-        if self._check_creatcloud_enabled():
-            logging.info("CreatCloud Enabled")
-            await self.old_do_reconnect(first)
+        if self._check_creatcloud_registerd():
+            if self._check_creatcloud_enabled():
+                logging.info("CreatCloud Enabled")
+                await self.old_do_reconnect(first)
+            else:
+                logging.info("CreatCloud Disabled")
         else:
-            logging.info("CreatCloud Disabled")
+            logging.info("CreatCloud Unregistered")
 
     async def _process_creatcloud_request(self, payload: bytes, topic: str = None) -> None:
         try:
@@ -161,6 +166,11 @@ class CreatCloud:
 
         creatcloud_options = self._get_creatcloud_options()
         return False if creatcloud_options is None else creatcloud_options["actived"]
+
+    def _check_creatcloud_registerd(self) -> bool:
+        creatcloud_options = self._get_creatcloud_options()
+        return creatcloud_options["username"] is not None \
+            and creatcloud_options["password"] is not None
 
     async def _handle_creatcloud_enable(self, web_request: WebRequest) -> Dict[str, Any]:
         active = web_request.get_boolean("active")
