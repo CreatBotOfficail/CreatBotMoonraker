@@ -161,9 +161,9 @@ class SafeOptions:
                             try:
                                 parsedOptions[key] = box.decrypt(ciphertext).decode()
                             except libnacl.CryptError:
-                                parsedOptions[key] = ""
+                                parsedOptions[key] = None
                         else:
-                            parsedOptions[key] = ""
+                            parsedOptions[key] = None
                     else:
                         parsedOptions[key] = value[1]
 
