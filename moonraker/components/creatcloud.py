@@ -35,6 +35,8 @@ class CreatCloud:
         machine: Machine = self.server.lookup_component("machine")
 
         self.creatcloud_enabled: Optional[bool] = config.getboolean("enable", None)
+        self.err_code = 0
+        self.err_str = ""
 
         # Reinitialize the client
         if self.mqtt.client_id is None:
@@ -79,6 +81,22 @@ class CreatCloud:
             "/server/creatcloud/user", RequestType.POST, self._handle_creatcloud_user,
             transports=ep_transports, auth_required=False
         )
+        self.server.register_endpoint(
+            "/server/creatcloud/info", RequestType.GET, self._handle_creatcloud_info,
+            transports=ep_transports
+        )
+
+        # Register CreatCloud notification and event
+        self.server.register_notification(
+            "creatcloud:info_update", "creatcloud_info_update")
+        self.server.register_event_handler(
+            "machine:public_ip_changed", self._update_local_ip)
+        self.server.register_event_handler(
+            "mqtt:connected", self._update_connect_state)
+        self.server.register_event_handler(
+            "mqtt:disconnected", self._update_connect_state)
+        self.server.register_event_handler(
+            "mqtt:connect_error", self._update_connect_state)
 
     async def component_init(self) -> None:
         pass
@@ -194,6 +212,14 @@ class CreatCloud:
                 )
             else:
                 await self.mqtt.close()
+
+            # send notification
+            self.server.get_event_loop().delay_callback(
+                0.01, self.server.send_event,
+                "creatcloud:info_update",
+                {"actived": active}
+            )
+
         return {"result": "success", "actived": active}
 
     async def _handle_creatcloud_user(self, web_request: WebRequest) -> Dict[str, Any]:
@@ -220,7 +246,47 @@ class CreatCloud:
             self.connect_task = self.mqtt.eventloop.create_task(
                 self.mqtt._do_reconnect(first=True)
             )
+
+            # send notification
+            self.server.get_event_loop().delay_callback(
+                0.01, self.server.send_event,
+                "creatcloud:info_update",
+                {"registerd": self._check_creatcloud_registerd()}
+            )
+
         return {"result": "success", "actived": self._check_creatcloud_enabled()}
+
+    async def _handle_creatcloud_info(self, web_request: WebRequest) -> Dict[str, Any]:
+        machine: Machine = self.server.lookup_component("machine")
+        creatcloud_options = self._get_creatcloud_options()
+        if creatcloud_options is None:
+            await self._update_creatcloud_options("actived", False)
+            creatcloud_options = self._get_creatcloud_options()
+
+        return {
+            "local_ip": machine.public_ip or "unknown",
+            "hostname": self.server.get_host_info()["hostname"],
+            "machine_id": self.mqtt.client_id,
+            "pubkey": creatcloud_options["__pubkey__"],
+            "actived": creatcloud_options["actived"],
+            "registerd": self._check_creatcloud_registerd(),
+            "online": self.mqtt.is_connected(),
+            "conn_code": self.err_code,
+            "conn_err": self.err_str
+        }
+
+    def _update_local_ip(self, ip: str) -> None:
+        self.server.send_event("creatcloud:info_update", {
+            "local_ip": ip
+        })
+
+    def _update_connect_state(self, code: int = 0, info: str = "") -> None:
+        self.err_code, self.err_str = code, info
+        self.server.send_event("creatcloud:info_update", {
+            "online": self.mqtt.is_connected(),
+            "conn_code": self.err_code,
+            "conn_err": self.err_str
+        })
 
 
 def load_component(config: ConfigHelper) -> CreatCloud:

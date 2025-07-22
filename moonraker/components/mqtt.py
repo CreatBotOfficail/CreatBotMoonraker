@@ -545,9 +545,12 @@ class MQTTClient(APITransport):
             self.server.send_event("mqtt:connected")
         else:
             if isinstance(reason_code, int):
+                err_code = reason_code
                 err_str = paho_mqtt.connack_string(reason_code)
             else:
+                err_code = reason_code.value
                 err_str = reason_code.getName()
+            self.server.send_event("mqtt:connect_error", err_code, err_str)
             self.server.set_failed_component("mqtt")
             self.server.add_warning(f"MQTT Connection Failed: {err_str}")
 
