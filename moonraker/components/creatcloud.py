@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 import logging
-import paho.mqtt.client as paho_mqtt
 
 from ..common import JsonRPC, RequestType, TransportType, WebRequest
 from ..utils import json_wrapper as jsonw
@@ -55,6 +54,7 @@ class CreatCloud:
             self.mqtt.user_name = creatcloud_options["username"]
             self.mqtt.password = creatcloud_options["password"]
 
+        # Resubscribe the topics
         self.creatcloud_topic_prefix = "CreatCloud/Klipper"
         self.mqtt.api_request_topic = f"{self.creatcloud_topic_prefix}/{client_id}/+/Action"
         self.mqtt.api_resp_topic = f"{self.creatcloud_topic_prefix}/{client_id}/000000/Action"
@@ -75,7 +75,7 @@ class CreatCloud:
         ep_transports = TransportType.all() & ~TransportType.MQTT
         self.server.register_endpoint(
             "/server/creatcloud/enable", RequestType.POST, self._handle_creatcloud_enable,
-            transports=ep_transports, auth_required=False
+            transports=ep_transports
         )
         self.server.register_endpoint(
             "/server/creatcloud/user", RequestType.POST, self._handle_creatcloud_user,
@@ -97,6 +97,15 @@ class CreatCloud:
             "mqtt:disconnected", self._update_connect_state)
         self.server.register_event_handler(
             "mqtt:connect_error", self._update_connect_state)
+
+        # Report the CreatCloud topics
+        logging.info(
+            f"\n***Replace MQTT topics***\n"
+            f"Reserved CreatCloud topics:\n"
+            f"API Request: {self.mqtt.api_request_topic}\n"
+            f"API Response: {self.mqtt.api_resp_topic}\n"
+            f"Moonraker Status: {self.mqtt.moonraker_status_topic}\n"
+            f"Klipper Status: {self.mqtt.klipper_status_topic}")
 
     async def component_init(self) -> None:
         pass
