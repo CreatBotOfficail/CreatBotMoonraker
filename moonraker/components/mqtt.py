@@ -568,7 +568,7 @@ class MQTTClient(APITransport):
                          f"{paho_mqtt.error_string(reason_code)}")
             if self.connect_task is None:
                 self.connect_task = asyncio.create_task(self._do_reconnect())
-            self.server.send_event("mqtt:disconnected")
+        self.server.send_event("mqtt:disconnected")
         self.connect_evt.clear()
 
     def _on_publish(self,
