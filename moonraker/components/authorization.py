@@ -743,7 +743,8 @@ class Authorization:
         hashed_pass = hashlib.pbkdf2_hmac(
             'sha256', password.encode(), salt, HASH_ITER).hex()
         if (valid := hashed_pass == user_info.password):
-            self.trusted_mqtt_clients.append(uuid)
+            if uuid not in self.trusted_mqtt_clients:
+                self.trusted_mqtt_clients.append(uuid)
         return valid
 
     def check_mqtt(self, uuid: str) -> bool:
