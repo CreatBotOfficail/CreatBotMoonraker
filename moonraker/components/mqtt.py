@@ -412,6 +412,8 @@ class MQTTClient(APITransport):
         self.klipper_status_topic = f"{self.instance_name}/klipper/status"
         self.klipper_state_prefix = f"{self.instance_name}/klipper/state"
         self.moonraker_status_topic = f"{self.instance_name}/moonraker/status"
+        self.moonraker_status_online = {'server': 'online'}
+        self.moonraker_status_offline = {'server': 'offline'}
         status_cfg: Dict[str, str] = config.getdict(
             "status_objects", {}, allow_empty_fields=True
         )
@@ -461,7 +463,7 @@ class MQTTClient(APITransport):
         if self.user_name is not None:
             self.client.username_pw_set(self.user_name, self.password)
         self.client.will_set(self.moonraker_status_topic,
-                             payload=jsonw.dumps({'server': 'offline'}),
+                             payload=jsonw.dumps(self.moonraker_status_offline),
                              qos=self.qos, retain=True)
         if self.tls_enabled:
             self.client.tls_set()
@@ -531,7 +533,7 @@ class MQTTClient(APITransport):
         logging.info("MQTT Client Connected")
         if reason_code == 0:
             self.publish_topic(self.moonraker_status_topic,
-                               {'server': 'online'}, retain=True)
+                               self.moonraker_status_online, retain=True)
             subs = [(k, v[0]) for k, v in self.subscribed_topics.items()]
             if subs:
                 _, msg_id = client.subscribe(subs)
@@ -882,7 +884,7 @@ class MQTTClient(APITransport):
         if not self.is_connected():
             return
         await self.publish_topic(self.moonraker_status_topic,
-                                 {'server': 'offline'},
+                                 self.moonraker_status_offline,
                                  retain=True)
         self.disconnect_evt = asyncio.Event()
         self.client.disconnect()
