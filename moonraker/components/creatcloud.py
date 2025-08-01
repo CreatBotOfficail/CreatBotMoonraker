@@ -263,7 +263,11 @@ class CreatCloud:
                 {"registerd": self._check_creatcloud_registerd()}
             )
 
-        return {"result": "success", "actived": self._check_creatcloud_enabled()}
+        return {
+            "result": "success",
+            "actived": self._check_creatcloud_enabled(),
+            "registerd": self._check_creatcloud_registerd()
+        }
 
     async def _handle_creatcloud_info(self, web_request: WebRequest) -> Dict[str, Any]:
         machine: Machine = self.server.lookup_component("machine")
