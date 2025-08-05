@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 from __future__ import annotations
+import copy
 import libnacl
 import libnacl.sealed
 
@@ -224,7 +225,7 @@ class SafeOptions:
         if section not in self.values:
             raise self.server.error("init section first")
         else:
-            options = self.values[section]["__data__"]
+            options = copy.deepcopy(self.values[section]["__data__"])
             options[key][1] = value
             options = _check_options_format(options)
 
