@@ -881,17 +881,16 @@ class MQTTClient(APITransport):
         if self.connect_task is not None:
             self.connect_task.cancel()
             self.connect_task = None
-        if not self.is_connected():
-            return
-        await self.publish_topic(self.moonraker_status_topic,
-                                 self.moonraker_status_offline,
-                                 retain=True)
-        self.disconnect_evt = asyncio.Event()
-        self.client.disconnect()
-        try:
-            await asyncio.wait_for(self.disconnect_evt.wait(), 2.)
-        except asyncio.TimeoutError:
-            logging.info("MQTT Disconnect Timeout")
+        if self.is_connected():
+            await self.publish_topic(self.moonraker_status_topic,
+                                     self.moonraker_status_offline,
+                                     retain=True)
+            self.disconnect_evt = asyncio.Event()
+            self.client.disconnect()
+            try:
+                await asyncio.wait_for(self.disconnect_evt.wait(), 2.)
+            except asyncio.TimeoutError:
+                logging.info("MQTT Disconnect Timeout")
         futs = list(self.pending_acks.values())
         futs.extend(self.pending_responses)
         for fut in futs:
