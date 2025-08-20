@@ -871,6 +871,12 @@ class Authorization:
                 return self.trusted_users[ip]["user"]
         return None
 
+    def upgrade_to_super_connection(self, user: Optional[UserInfo]) -> Optional[UserInfo]:
+        if user.username in RESERVED_USERS:
+            return self.users[SUPER_USER]
+        else:
+            return user
+
     def _check_oneshot_token(
         self, token: str, cur_ip: Optional[IPAddr]
     ) -> Optional[UserInfo]:

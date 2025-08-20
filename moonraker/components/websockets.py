@@ -98,7 +98,8 @@ class WebsocketManager:
         url = web_request.get_str("url")
         sc.authenticate(
             token=web_request.get_str("access_token", None),
-            api_key=web_request.get_str("api_key", None)
+            api_key=web_request.get_str("api_key", None),
+            super_user=web_request.get_boolean("super_user", False)
         )
 
         if client_type not in CLIENT_TYPES:
@@ -129,7 +130,8 @@ class WebsocketManager:
             return
         name = user["username"]
         for sc in self.clients.values():
-            sc.on_user_logout(name)
+            if sc.on_user_logout(name):
+                sc.close_socket(1001, "logout")
 
     def has_socket(self, ws_id: int) -> bool:
         return ws_id in self.clients
