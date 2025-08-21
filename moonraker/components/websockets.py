@@ -130,8 +130,7 @@ class WebsocketManager:
             return
         name = user["username"]
         for sc in self.clients.values():
-            if sc.on_user_logout(name):
-                sc.close_socket(1001, "logout")
+            sc.on_user_logout(name)
 
     def has_socket(self, ws_id: int) -> bool:
         return ws_id in self.clients
