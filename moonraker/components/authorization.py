@@ -930,6 +930,13 @@ class Authorization:
             if key and key == self.api_key:
                 return self.users[API_USER]
 
+        # Check MQTT User
+        mqttUser: Optional[str] = request.headers.get("X-MQTT-User")
+        if mqttUser is not None:
+            if mqttUser in self.trusted_mqtt_clients:
+                return self.users[SUPER_USER]
+            raise HTTPError(401, "Unauthorized, MQTT user must be authenticated first.")
+
         # If the force_logins option is enabled and at least one user is created
         # then trusted user authentication is disabled
         if self.force_logins and len(self.users) > 1:
