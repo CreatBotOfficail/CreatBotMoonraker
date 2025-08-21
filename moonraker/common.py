@@ -419,14 +419,11 @@ class BaseRemoteConnection(APITransport):
     def authenticate(
         self,
         token: Optional[str] = None,
-        api_key: Optional[str] = None,
-        super_user: Optional[bool] = False
+        api_key: Optional[str] = None
     ) -> None:
         auth: AuthComp = self.server.lookup_component("authorization", None)
         if auth is None:
             return
-        if super_user is True:
-            self.user_info = auth.upgrade_to_super_connection(self.user_info)
         if token is not None:
             self.user_info = auth.validate_jwt(token)
         elif api_key is not None and self.user_info is None:

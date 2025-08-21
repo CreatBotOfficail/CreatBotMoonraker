@@ -98,8 +98,7 @@ class WebsocketManager:
         url = web_request.get_str("url")
         sc.authenticate(
             token=web_request.get_str("access_token", None),
-            api_key=web_request.get_str("api_key", None),
-            super_user=web_request.get_boolean("super_user", False)
+            api_key=web_request.get_str("api_key", None)
         )
 
         if client_type not in CLIENT_TYPES:
