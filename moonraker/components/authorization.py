@@ -278,6 +278,9 @@ class Authorization:
         wsm.register_notification(
             "authorization:user_logged_out", event_type="logout"
         )
+        wsm.register_notification(
+            "authorization:user_reset_pwd", event_type="logout"
+        )
 
     async def component_init(self) -> None:
         # Populate users from database
@@ -519,7 +522,7 @@ class Authorization:
         eventloop = self.server.get_event_loop()
         eventloop.delay_callback(
             .005, self.server.send_event,
-             "authorization:user_logged_out",
+             "authorization:user_reset_pwd",
             {'username': username}
         )
         return {
