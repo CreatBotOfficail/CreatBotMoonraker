@@ -316,6 +316,8 @@ class WebSocket(WebSocketHandler, BaseRemoteConnection):
 
     def on_user_logout(self, user: str) -> bool:
         if super().on_user_logout(user):
+            kconn: Klippy = self.server.lookup_component("klippy_connection")
+            kconn.remove_subscription(self)
             self._need_auth = True
             return True
         return False
