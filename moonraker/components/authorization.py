@@ -410,7 +410,7 @@ class Authorization:
         sources = ["moonraker"]
         if self.ldap is not None:
             sources.append("ldap")
-        login_req = self.force_logins and len(self.users) > 1
+        login_req = self.force_logins and len(self.users) > 2
         request_trusted: Optional[bool] = None
         user = web_request.get_current_user()
         req_ip = web_request.ip_addr
@@ -933,7 +933,7 @@ class Authorization:
 
         # If the force_logins option is enabled and at least one user is created
         # then trusted user authentication is disabled
-        if self.force_logins and len(self.users) > 1:
+        if self.force_logins and len(self.users) > 2:
             if not auth_required:
                 return None
             raise HTTPError(401, "Unauthorized, Force Logins Enabled")
