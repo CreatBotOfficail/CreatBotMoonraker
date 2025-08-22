@@ -256,6 +256,7 @@ class WebSocket(WebSocketHandler, BaseRemoteConnection):
         self.set_nodelay(True)
         self._connected_time = self.eventloop.get_loop_time()
         agent = self.request.headers.get("User-Agent", "")
+        mqttUser = self.request.headers.get("X-MQTT-User", None)
         is_proxy = False
         if (
             "X-Forwarded-For" in self.request.headers or
@@ -265,6 +266,7 @@ class WebSocket(WebSocketHandler, BaseRemoteConnection):
         logging.info(f"Websocket Opened: ID: {self.uid}, "
                      f"Proxied: {is_proxy}, "
                      f"User Agent: {agent}, "
+                     f"MQTT User: {mqttUser}, "
                      f"Host Name: {self.hostname}")
         self.wsm.add_client(self)
 
@@ -369,6 +371,7 @@ class BridgeSocket(WebSocketHandler):
         self.set_nodelay(True)
         self._connected_time = self.eventloop.get_loop_time()
         agent = self.request.headers.get("User-Agent", "")
+        mqttUser = self.request.headers.get("X-MQTT-User", None)
         is_proxy = False
         if (
             "X-Forwarded-For" in self.request.headers or
@@ -378,6 +381,7 @@ class BridgeSocket(WebSocketHandler):
         logging.info(f"Bridge Socket Opened: ID: {self.uid}, "
                      f"Proxied: {is_proxy}, "
                      f"User Agent: {agent}, "
+                     f"MQTT User: {mqttUser}, "
                      f"Host Name: {self.hostname}")
         self.wsm.add_bridge_connection(self)
 
