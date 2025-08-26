@@ -67,7 +67,7 @@ HASH_ITER = 100000
 API_USER = "_API_KEY_USER_"
 SUPER_USER = "_SUPER_USER_"
 TRUSTED_USER = "_TRUSTED_USER_"
-RESERVED_USERS = [API_USER, TRUSTED_USER]
+RESERVED_USERS = [API_USER, TRUSTED_USER, SUPER_USER]
 JWT_EXP_TIME = datetime.timedelta(hours=1)
 JWT_HEADER = {
     'alg': "EdDSA",
@@ -500,7 +500,7 @@ class Authorization:
         if user_info.source == "ldap":
             raise self.server.error(
                 f"Can´t Reset password for ldap user {username}")
-        if username in RESERVED_USERS:
+        if username in RESERVED_USERS and username != SUPER_USER:
             raise self.server.error(
                 f"Invalid Reset Request for user {username}")
         salt = bytes.fromhex(user_info.salt)
@@ -631,7 +631,7 @@ class Authorization:
             curname = current_user.username
             if curname == username:
                 raise self.server.error(f"Cannot delete logged in user {curname}")
-        if username in RESERVED_USERS + [SUPER_USER]:
+        if username in RESERVED_USERS:
             raise self.server.error(
                 f"Invalid Request for reserved user {username}")
         user_info: Optional[UserInfo] = self.users.get(username)
