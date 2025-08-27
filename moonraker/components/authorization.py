@@ -245,6 +245,15 @@ class Authorization:
             auth_required=False
         )
         self.server.register_endpoint(
+            "/access/super_login", RequestType.POST, self._handle_super_login,
+            transports=TransportType.HTTP | TransportType.WEBSOCKET,
+            auth_required=False
+        )
+        self.server.register_endpoint(
+            "/access/super_logout", RequestType.POST, self._handle_super_logout,
+            transports=TransportType.HTTP | TransportType.WEBSOCKET,
+        )
+        self.server.register_endpoint(
             "/access/user", RequestType.all(), self._handle_user_request,
             transports=TransportType.HTTP | TransportType.WEBSOCKET
         )
@@ -406,6 +415,38 @@ class Authorization:
             "action": "user_logged_out"
         }
 
+    async def _handle_super_login(self, web_request: WebRequest) -> Dict[str, Any]:
+        ip = web_request.get_ip_address()
+        trusted_user = await self._check_trusted_connection(ip)
+        if trusted_user is not None:
+            password: str = web_request.get_str('password')
+            user_info = self.users[SUPER_USER]
+            salt = bytes.fromhex(user_info.salt)
+            hashed_pass = hashlib.pbkdf2_hmac(
+                'sha256', password.encode(), salt, HASH_ITER).hex()
+            if (hashed_pass == user_info.password):
+                self._upgrade_trusted_user(ip)
+            else:
+                raise self.server.error("Invalid Password")
+        else:
+            raise self.server.error("The ip address is not trusted")
+        return {
+            "username": SUPER_USER,
+            "action": "trusted_user_super_login"
+        }
+
+    async def _handle_super_logout(self, web_request: WebRequest) -> Dict[str, Any]:
+        ip = web_request.get_ip_address()
+        trusted_user = await self._check_trusted_connection(ip)
+        if trusted_user is not None:
+            self._reset_trusted_user(ip)
+        else:
+            raise self.server.error("The ip address is not trusted")
+        return {
+            "username": SUPER_USER,
+            "action": "trusted_user_super_logout"
+        }
+
     async def _handle_info_request(self, web_request: WebRequest) -> Dict[str, Any]:
         sources = ["moonraker"]
         if self.ldap is not None:
@@ -512,6 +553,7 @@ class Authorization:
             'sha256', new_pass.encode(), salt, HASH_ITER).hex()
         self.users[username].password = new_hashed_pass
         if username == SUPER_USER:
+            self._reset_trusted_user()
             self.trusted_mqtt_clients.clear()
         jwk_id: Optional[str] = self.users[username].jwk_id
         self.users[username].jwt_secret = None
@@ -752,6 +794,28 @@ class Authorization:
 
     def check_mqtt(self, uuid: str) -> bool:
         return uuid in self.trusted_mqtt_clients
+
+    def _upgrade_trusted_user(self, ip: IPAddr) -> None:
+        if ip in self.trusted_users:
+            self.trusted_users[ip]["user"] = self.users[SUPER_USER]
+            wsm: WebsocketManager = self.server.lookup_component("websockets")
+            for sc in wsm.get_clients_by_ip(ip):
+                if sc.user_info.username == TRUSTED_USER:
+                    sc.user_info = self.users[SUPER_USER]
+
+    def _reset_trusted_user(self, ip: Optional[IPAddr] = None) -> None:
+        wsm: WebsocketManager = self.server.lookup_component("websockets")
+        trusted_user = UserInfo(TRUSTED_USER, "", time.time())
+        if ip is None:
+            for ip_key, user_info in list(self.trusted_users.items()):
+                if user_info["user"] == self.users[SUPER_USER]:
+                    self.trusted_users[ip_key]["user"] = trusted_user
+        elif ip in self.trusted_users:
+            self.trusted_users[ip]["user"] = trusted_user
+
+        for sc in wsm.get_clients_by_ip(ip):
+            if sc.user_info.username == SUPER_USER:
+                sc.user_info = trusted_user
 
     def _load_private_key(self, secret: str) -> Signer:
         try:

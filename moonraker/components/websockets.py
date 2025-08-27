@@ -163,6 +163,15 @@ class WebsocketManager:
                 ret.append(sc)
         return ret
 
+    def get_clients_by_ip(self, ip: Optional[IPAddress]) -> List[BaseRemoteConnection]:
+        if ip is None:
+            return self.clients.values()
+        ret: List[BaseRemoteConnection] = []
+        for sc in self.clients.values():
+            if sc.ip_addr == ip:
+                ret.append(sc)
+        return ret
+
     def get_unidentified_clients(self) -> List[BaseRemoteConnection]:
         ret: List[BaseRemoteConnection] = []
         for sc in self.clients.values():
