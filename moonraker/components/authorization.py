@@ -127,6 +127,7 @@ class Authorization:
         self.server = config.get_server()
         self.login_timeout = config.getint('login_timeout', 90)
         self.force_logins = config.getboolean('force_logins', False)
+        self.force_verify = config.getboolean('force_verify', False)
         self.default_source = config.get('default_source', "moonraker").lower()
         self.enable_api_key = config.getboolean('enable_api_key', True)
         self.max_logins = config.getint("max_login_attempts", None, above=0)
@@ -433,10 +434,11 @@ class Authorization:
                 raise self.server.error("Invalid Password")
         else:
             raise self.server.error("The ip address is not trusted")
+        curUser = None if self.force_verify else UserInfo(TRUSTED_USER, "")
         eventloop = self.server.get_event_loop()
         eventloop.delay_callback(
             .005, self.server.send_event, "authorization:user_change",
-            ip, UserInfo(TRUSTED_USER, ""), self.users[SUPER_USER]
+            ip, curUser, self.users[SUPER_USER]
         )
         return {
             "username": SUPER_USER,
@@ -450,10 +452,11 @@ class Authorization:
             self._reset_trusted_user(ip)
         else:
             raise self.server.error("The ip address is not trusted")
+        newUser = None if self.force_verify else UserInfo(TRUSTED_USER, "")
         eventloop = self.server.get_event_loop()
         eventloop.delay_callback(
             .005, self.server.send_event, "authorization:user_change",
-            ip, self.users[SUPER_USER], UserInfo(TRUSTED_USER, "")
+            ip, self.users[SUPER_USER], newUser
         )
         return {
             "username": SUPER_USER,
@@ -476,6 +479,7 @@ class Authorization:
             "default_source": self.default_source,
             "available_sources": sources,
             "login_required": login_req,
+            "verify_required": login_req | self.force_verify,
             "trusted": request_trusted
         }
 
@@ -575,7 +579,7 @@ class Authorization:
             self.public_jwks.pop(jwk_id, None)
         await self._sync_user(username)
         eventloop = self.server.get_event_loop()
-        if username == SUPER_USER:
+        if username == SUPER_USER and not self.force_verify:
             eventloop.delay_callback(
                 .001, self.server.send_event,
                 "authorization:user_change",
@@ -1016,6 +1020,13 @@ class Authorization:
         # then it is acceptable to return None
         trusted_user = await self._check_trusted_connection(ip)
         if trusted_user is not None:
+            if self.force_verify:
+                if trusted_user == self.users[SUPER_USER]:
+                    return trusted_user
+                elif not auth_required:
+                    return None
+                else:
+                    raise HTTPError(401, "Unauthorized, Trusted user upgrade required.")
             return trusted_user
         if not auth_required:
             return None
