@@ -290,6 +290,9 @@ class Authorization:
         wsm.register_notification(
             "authorization:user_reset_pwd", event_type="logout"
         )
+        wsm.register_notification(
+            "authorization:user_change", event_type="user_change"
+        )
 
     async def component_init(self) -> None:
         # Populate users from database
@@ -430,6 +433,11 @@ class Authorization:
                 raise self.server.error("Invalid Password")
         else:
             raise self.server.error("The ip address is not trusted")
+        eventloop = self.server.get_event_loop()
+        eventloop.delay_callback(
+            .005, self.server.send_event, "authorization:user_change",
+            ip, UserInfo(TRUSTED_USER, ""), self.users[SUPER_USER]
+        )
         return {
             "username": SUPER_USER,
             "action": "trusted_user_super_login"
@@ -442,6 +450,11 @@ class Authorization:
             self._reset_trusted_user(ip)
         else:
             raise self.server.error("The ip address is not trusted")
+        eventloop = self.server.get_event_loop()
+        eventloop.delay_callback(
+            .005, self.server.send_event, "authorization:user_change",
+            ip, self.users[SUPER_USER], UserInfo(TRUSTED_USER, "")
+        )
         return {
             "username": SUPER_USER,
             "action": "trusted_user_super_logout"
@@ -562,6 +575,12 @@ class Authorization:
             self.public_jwks.pop(jwk_id, None)
         await self._sync_user(username)
         eventloop = self.server.get_event_loop()
+        if username == SUPER_USER:
+            eventloop.delay_callback(
+                .001, self.server.send_event,
+                "authorization:user_change",
+                None, self.users[SUPER_USER], UserInfo(TRUSTED_USER, "")
+            )
         eventloop.delay_callback(
             .005, self.server.send_event,
              "authorization:user_reset_pwd",
@@ -798,24 +817,15 @@ class Authorization:
     def _upgrade_trusted_user(self, ip: IPAddr) -> None:
         if ip in self.trusted_users:
             self.trusted_users[ip]["user"] = self.users[SUPER_USER]
-            wsm: WebsocketManager = self.server.lookup_component("websockets")
-            for sc in wsm.get_clients_by_ip(ip):
-                if sc.user_info.username == TRUSTED_USER:
-                    sc.user_info = self.users[SUPER_USER]
 
     def _reset_trusted_user(self, ip: Optional[IPAddr] = None) -> None:
-        wsm: WebsocketManager = self.server.lookup_component("websockets")
-        trusted_user = UserInfo(TRUSTED_USER, "", time.time())
+        trusted_user = UserInfo(TRUSTED_USER, "")
         if ip is None:
             for ip_key, user_info in list(self.trusted_users.items()):
                 if user_info["user"] == self.users[SUPER_USER]:
                     self.trusted_users[ip_key]["user"] = trusted_user
         elif ip in self.trusted_users:
             self.trusted_users[ip]["user"] = trusted_user
-
-        for sc in wsm.get_clients_by_ip(ip):
-            if sc.user_info.username == SUPER_USER:
-                sc.user_info = trusted_user
 
     def _load_private_key(self, secret: str) -> Signer:
         try:

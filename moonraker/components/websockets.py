@@ -14,6 +14,7 @@ from ..common import (
     WebRequest,
     BaseRemoteConnection,
     TransportType,
+    UserInfo,
 )
 from ..utils import ServerError, parse_ip_address
 
@@ -75,6 +76,16 @@ class WebsocketManager:
             def notify_handler(*args):
                 self.notify_clients(notify_name, args)
                 self._process_logout(*args)
+        elif event_type == "user_change":
+            def notify_handler(*args):
+                ip, curUser, newUser = args
+                data: Dict[str, Any] = {
+                    "ip": str(ip),
+                    "curUser": None if curUser is None else curUser.username,
+                    "newUser": None if newUser is None else newUser.username
+                }
+                self.notify_clients(notify_name, [data])
+                self._process_user_change(*args)
         else:
             def notify_handler(*args):
                 self.notify_clients(notify_name, args)
@@ -131,6 +142,16 @@ class WebsocketManager:
         for sc in self.clients.values():
             sc.on_user_logout(name)
 
+    def _process_user_change(self, ip: Optional[IPAddress],
+                             curUser: Optional[UserInfo],
+                             newUser: Optional[UserInfo]) -> None:
+        for sc in self.clients.values():
+            if ip is None or sc.ip_addr == ip:
+                if curUser is not None:
+                    sc.on_user_logout(curUser.username)
+                if newUser is not None:
+                    sc.on_user_login(newUser)
+
     def has_socket(self, ws_id: int) -> bool:
         return ws_id in self.clients
 
@@ -160,15 +181,6 @@ class WebsocketManager:
         ret: List[BaseRemoteConnection] = []
         for sc in self.clients.values():
             if sc.client_data.get("name", "").lower() == name.lower():
-                ret.append(sc)
-        return ret
-
-    def get_clients_by_ip(self, ip: Optional[IPAddress]) -> List[BaseRemoteConnection]:
-        if ip is None:
-            return self.clients.values()
-        ret: List[BaseRemoteConnection] = []
-        for sc in self.clients.values():
-            if sc.ip_addr == ip:
                 ret.append(sc)
         return ret
 
