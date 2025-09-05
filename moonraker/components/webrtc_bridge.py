@@ -40,7 +40,7 @@ class WebRTCBridge:
         params = "&".join(f"src={quote(cam)}" for cam in cameras if cam)
         return f"{API_WEBRTC_URL}?{params}"
 
-    async def handle_sdp(self, data: Dict[str, Any], topic: str) -> Dict[str, Any]:
+    async def handle_sdp(self, data: Dict[str, Any], msgUUID: str) -> Dict[str, Any]:
         try:
             sdp = data.get("sdp", "")
             if not sdp:
@@ -60,6 +60,7 @@ class WebRTCBridge:
                     headers={
                         "Content-Type": "application/sdp",
                         "Accept": "application/sdp",
+                        "X-MQTT-User": msgUUID,
                     },
                     request_timeout=10,
                 )

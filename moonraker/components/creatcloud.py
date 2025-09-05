@@ -149,7 +149,7 @@ class CreatCloud:
                             webrtc_bridge: WebRTCBridge = self.server.lookup_component(
                                 "webrtc_bridge", None)
                             if webrtc_bridge:
-                                response["data"] = await webrtc_bridge.handle_sdp(msgData, topic)
+                                response["data"] = await webrtc_bridge.handle_sdp(msgData, msgUUID)
                             else:
                                 response["data"] = {
                                     "type": "error", "message": "WebRTC Bridge component not available"}
