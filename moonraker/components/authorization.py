@@ -571,7 +571,7 @@ class Authorization:
         self.users[username].password = new_hashed_pass
         if username == SUPER_USER:
             self._reset_trusted_user()
-            self.trusted_mqtt_clients.clear()
+            self._reset_mqtt_user()
         jwk_id: Optional[str] = self.users[username].jwk_id
         self.users[username].jwt_secret = None
         self.users[username].jwk_id = None
@@ -817,6 +817,14 @@ class Authorization:
 
     def check_mqtt(self, uuid: str) -> bool:
         return uuid in self.trusted_mqtt_clients
+
+    def get_mqtt_user(self) -> Tuple[str, str]:
+        user_info = self.users[SUPER_USER]
+        return user_info.password, user_info.salt
+
+    def _reset_mqtt_user(self) -> None:
+        self.trusted_mqtt_clients.clear()
+        self.server.send_event("authorization:mqtt_user_reset")
 
     def _upgrade_trusted_user(self, ip: IPAddr) -> None:
         if ip in self.trusted_users:

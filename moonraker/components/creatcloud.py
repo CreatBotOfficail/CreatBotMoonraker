@@ -56,6 +56,7 @@ class CreatCloud:
 
         # Resubscribe the topics
         self.creatcloud_topic_prefix = "CreatCloud/Klipper"
+        self.moonraker_auth_topic = f"{self.creatcloud_topic_prefix}/{client_id}/885678999999999/Action"
         self.mqtt.api_request_topic = f"{self.creatcloud_topic_prefix}/{client_id}/+/Action"
         self.mqtt.api_resp_topic = f"{self.creatcloud_topic_prefix}/{client_id}/000000/Action"
         self.mqtt.klipper_status_topic = f"{self.creatcloud_topic_prefix}/{client_id}/Status"
@@ -99,6 +100,10 @@ class CreatCloud:
             "mqtt:disconnected", self._update_connect_state)
         self.server.register_event_handler(
             "mqtt:connect_error", self._update_connect_state)
+        self.server.register_event_handler(
+            "mqtt:connected", self._publish_auth_info)
+        self.server.register_event_handler(
+            "authorization:mqtt_user_reset", self._publish_auth_info)
 
         # Report the CreatCloud topics
         logging.info(
@@ -130,6 +135,22 @@ class CreatCloud:
                 "maxTemp": "?"
             }
         }
+
+    async def _publish_auth_info(self) -> None:
+        auth: AuthComp = self.server.lookup_component('authorization', None)
+        password, salt = (None, None) if auth is None else auth.get_mqtt_user()
+        self.mqtt.publish_topic(
+            self.moonraker_auth_topic, {
+                "ver": 3,
+                "cmd": "PWD",
+                "uuid": "",
+                "imei": self.mqtt.client_id,
+                "data": {
+                    "password": password,
+                    "salt": salt
+                }
+            }
+        )
 
     async def _creatcloud_reconnect(self, first: bool = False) -> None:
         if self._check_creatcloud_registerd():
