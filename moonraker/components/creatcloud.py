@@ -61,6 +61,8 @@ class CreatCloud:
         self.mqtt.klipper_status_topic = f"{self.creatcloud_topic_prefix}/{client_id}/Status"
         self.mqtt.klipper_state_prefix = f"{self.creatcloud_topic_prefix}/{client_id}/State"
         self.mqtt.moonraker_status_topic = f"{self.creatcloud_topic_prefix}/{client_id}/Public"
+        self.mqtt.moonraker_status_online = self._get_moonraker_status(online=True)
+        self.mqtt.moonraker_status_offline = self._get_moonraker_status(online=False)
 
         self.mqtt.subscribed_topics.clear()
         self.mqtt.subscribe_topic(self.mqtt.api_request_topic,
@@ -109,6 +111,25 @@ class CreatCloud:
 
     async def component_init(self) -> None:
         pass
+
+    def _get_moonraker_status(self, online: bool = False) -> Dict[str, Any]:
+        machine: Machine = self.server.lookup_component("machine")
+        return {
+            "ver": 3,
+            "cmd": "LWT",
+            "uuid": "",
+            "imei": self.mqtt.client_id,
+            "data": {
+                "state": "login" if online else "logout",
+                "name": self.server.get_host_info()["hostname"],
+                "nozzle": "?",
+                "heatBed": "?",
+                "heatChamber": "?",
+                "camera": "?",
+                "local_ip": machine.public_ip or "?",
+                "maxTemp": "?"
+            }
+        }
 
     async def _creatcloud_reconnect(self, first: bool = False) -> None:
         if self._check_creatcloud_registerd():
