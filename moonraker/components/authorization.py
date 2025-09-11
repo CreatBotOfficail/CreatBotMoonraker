@@ -255,6 +255,10 @@ class Authorization:
             transports=TransportType.HTTP | TransportType.WEBSOCKET,
         )
         self.server.register_endpoint(
+            "/access/super_reset", RequestType.POST, self._handle_super_reset,
+            transports=TransportType.HTTP | TransportType.WEBSOCKET,
+        )
+        self.server.register_endpoint(
             "/access/user", RequestType.all(), self._handle_user_request,
             transports=TransportType.HTTP | TransportType.WEBSOCKET
         )
@@ -461,6 +465,32 @@ class Authorization:
         return {
             "username": SUPER_USER,
             "action": "trusted_user_super_logout"
+        }
+
+    async def _handle_super_reset(self, web_request: WebRequest) -> Dict[str, Any]:
+        salt = bytes.fromhex(self.users[SUPER_USER].salt)
+        hashed_pass = hashlib.pbkdf2_hmac(
+            'sha256', 'admin'.encode(), salt, HASH_ITER).hex()
+        self.users[SUPER_USER].password = hashed_pass
+        self._reset_trusted_user()
+        self._reset_mqtt_user()
+        await self._sync_user(SUPER_USER)
+        eventloop = self.server.get_event_loop()
+        if self.force_verify:
+            eventloop.delay_callback(
+                .005, self.server.send_event,
+                "authorization:user_reset_pwd",
+                {'username': SUPER_USER}
+            )
+        else:
+            eventloop.delay_callback(
+                .005, self.server.send_event,
+                "authorization:user_change",
+                None, self.users[SUPER_USER], UserInfo(TRUSTED_USER, "")
+            )
+        return {
+            'username': SUPER_USER,
+            'action': "trusted_user_super_reset"
         }
 
     async def _handle_info_request(self, web_request: WebRequest) -> Dict[str, Any]:
