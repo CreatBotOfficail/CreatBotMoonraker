@@ -87,6 +87,9 @@ class WebcamManager:
                     ro_info.append(f"Detected webcam UID collision: {uid}")
                 all_uids.append(webcam.uid)
                 if webcam.name in self.webcams:
+                    if self.webcams[webcam.name].is_allow_overwrite():
+                        self.webcams[webcam.name].update_overwrite(webcam)
+                        continue
                     ro_info.append(
                         f"Detected webcam name collision: {webcam.name}, uuid: "
                         f"{uid}.  This camera will be ignored."
@@ -151,6 +154,19 @@ class WebcamManager:
                 return cam
         raise self.server.error(f"Webcam with UID {uid} not found", 404)
 
+    async def get_overwriter(self, webcam: WebCam) -> WebCam:
+        if webcam.is_allow_overwrite():
+            if uid := webcam.extra_data.get("databaseID", None):
+                db: MoonrakerDatabase = self.server.lookup_component("database")
+                cam_data = await db.get_item("webcams", uid, {})
+                cam_data["uid"] = uid
+                logging.info(cam_data)
+                return WebCam.from_database(self.server, cam_data)
+            else:
+                return WebCam.copy(webcam, self._get_guaranteed_uuid())
+        else:
+            self.server.error("Webcam with UID {webcam.uid} is not allowed overwrite", 404)
+
     def _lookup_camera(
         self, web_request: WebRequest, required: bool = True
     ) -> Optional[WebCam]:
@@ -173,10 +189,11 @@ class WebcamManager:
         elif req_type == RequestType.POST:
             if webcam is not None:
                 if webcam.source == "config":
-                    raise self.server.error(
-                        f"Cannot overwrite webcam '{webcam.name}' sourced from "
-                        "Moonraker configuration"
-                    )
+                    if not webcam.is_allow_overwrite():
+                        raise self.server.error(
+                            f"Cannot overwrite webcam '{webcam.name}' sourced from "
+                            "Moonraker configuration"
+                        )
                 new_name = web_request.get_str("name", None)
                 if new_name is not None and webcam.name != new_name:
                     if new_name in self.webcams:
@@ -186,21 +203,41 @@ class WebcamManager:
                             "already exists."
                         )
                     self.webcams.pop(webcam.name, None)
-                webcam.update(web_request)
+                if webcam.source == "config":
+                    overWebCam = await self.get_overwriter(webcam)
+                    overWebCam.update(web_request)
+                    webcam.update_overwrite(overWebCam)
+                else:
+                    webcam.update(web_request)
             else:
                 uid = self._get_guaranteed_uuid()
                 webcam = WebCam.from_web_request(self.server, web_request, uid)
-            await self._save_cam(webcam)
+            if webcam.source == "config":
+                await self._save_cam(overWebCam, False)
+            else:
+                await self._save_cam(webcam)
             webcam_data = webcam.as_dict()
         elif req_type == RequestType.DELETE:
             assert webcam is not None
             if webcam.source == "config":
-                raise self.server.error(
-                    f"Cannot delete webcam '{webcam.name}' sourced from "
-                    "Moonraker configuration"
-                )
+                if webcam.is_allow_overwrite():
+                    if webcam.has_overwrite():
+                        overWebCam = await self.get_overwriter(webcam)
+                    else:
+                        overWebCam = None
+                    webcam.recover_overwrite()
+                else:
+                    raise self.server.error(
+                        f"Cannot delete webcam '{webcam.name}' sourced from "
+                        "Moonraker configuration"
+                    )
             webcam_data = webcam.as_dict()
-            self._delete_cam(webcam)
+            if webcam.source == "config":
+                if overWebCam is not None:
+                    overWebCam.name += "_del"
+                    self._delete_cam(overWebCam)
+            else:
+                self._delete_cam(webcam)
         if req_type != RequestType.GET:
             self.server.send_event(
                 "webcam:webcams_changed", {"webcams": self._list_webcams()}
@@ -251,6 +288,7 @@ class WebCam:
         self.flip_vertical: bool = kwargs["flip_vertical"]
         self.rotation: int = kwargs["rotation"]
         self.source: str = kwargs["source"]
+        self.overwrite: bool = kwargs.get("overwrite", False)
         self.extra_data: Dict[str, Any] = kwargs.get("extra_data", {})
         self.uid: str = kwargs["uid"]
         if self.rotation not in [0, 90, 180, 270]:
@@ -384,9 +422,64 @@ class WebCam:
                 val = web_request.get(field)
             setattr(self, field, val)
 
+    def is_allow_overwrite(self) -> bool:
+        return self.overwrite
+
+    def has_overwrite(self) -> bool:
+        if self.source == "config":
+            return bool(self.extra_data.get("databaseID", None))
+        return False
+
+    # Only can overwrite:
+    #       icon, location, flip_horizontal, flip_vertical, rotation
+    def update_overwrite(self, webcam: WebCam) -> None:
+        _overwrite_fields: List[str] = ["icon", "location",
+                                        "flip_horizontal", "flip_vertical", "rotation"]
+        if self.is_allow_overwrite():
+            self.extra_data["databaseID"] = webcam.uid
+            if self.extra_data.get("backConfig", {}) == {}:
+                self.extra_data["backConfig"] = {
+                    k: v for k, v in self.__dict__.items()
+                    if k in _overwrite_fields
+                }
+            for field in self.__dict__.keys():
+                if field in _overwrite_fields:
+                    setattr(self, field, getattr(webcam, field))
+
+    def recover_overwrite(self) -> None:
+        if self.is_allow_overwrite():
+            if self.extra_data.get("databaseID", None):
+                backConf: Dict[str, Any] = self.extra_data.get("backConfig", {})
+                for field, value in backConf.items():
+                    setattr(self, field, value)
+                self.extra_data.pop("backConfig", None)
+                self.extra_data.pop("databaseID", None)
+
     @staticmethod
     def set_default_host(host: str) -> None:
         WebCam._default_host = host
+
+    @classmethod
+    def copy(cls, webcam: WebCam, uid: str) -> WebCam:
+        return cls(
+            server=webcam._server,
+            name=webcam.name,
+            enabled=webcam.enabled,
+            icon=webcam.icon,
+            aspect_ratio=webcam.aspect_ratio,
+            target_fps=webcam.target_fps,
+            target_fps_idle=webcam.target_fps_idle,
+            location=webcam.location,
+            service=webcam.service,
+            stream_url=webcam.stream_url,
+            snapshot_url=webcam.snapshot_url,
+            flip_horizontal=webcam.flip_horizontal,
+            flip_vertical=webcam.flip_vertical,
+            rotation=webcam.rotation,
+            source="database",
+            extra_data={},
+            uid=uid
+        )
 
     @classmethod
     def from_config(cls, config: ConfigHelper) -> WebCam:
@@ -409,6 +502,7 @@ class WebCam:
                 flip_horizontal=config.getboolean("flip_horizontal", False),
                 flip_vertical=config.getboolean("flip_vertical", False),
                 rotation=config.getint("rotation", 0),
+                overwrite=config.getboolean("overwrite", False),
                 source="config",
                 uid=str(uuid.uuid5(ns, f"moonraker.webcam.{name}"))
             )
