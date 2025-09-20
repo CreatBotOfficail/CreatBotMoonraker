@@ -195,6 +195,8 @@ class Machine:
             logging.exception("Failed to read moonraker.asvc")
             data = default_svcs
         svcs = [svc.strip() for svc in data.split("\n") if svc.strip()]
+        if "go2rtc" not in svcs:
+            svcs.append("go2rtc")
         for svc in svcs:
             if svc.endswith(".service"):
                 svc = svc.rsplit(".", 1)[0]

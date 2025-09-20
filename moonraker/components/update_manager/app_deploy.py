@@ -67,6 +67,7 @@ class AppDeploy(BaseDeploy):
         self.system_deps_json: Optional[pathlib.Path] = None
         self.info_tags: List[str] = config.getlist("info_tags", [])
         self.managed_services: List[str] = []
+        self.install_cmd: Optional[pathlib.Path] = None
 
     def _configure_path(self, config: ConfigHelper, reserve: bool = True) -> None:
         self.path = pathlib.Path(config.get('path')).expanduser().resolve()
@@ -194,6 +195,8 @@ class AppDeploy(BaseDeploy):
             f"Invalid path for option `{option}` in section "
             f"[{config.get_name()}]: Path `{path}`"
         )
+        if self.install_cmd:
+            return
         if not path.exists():
             raise config.error(f"{base_msg} does not exist")
         if check_file and not path.is_file():
