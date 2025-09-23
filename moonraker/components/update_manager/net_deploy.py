@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 class NetDeploy(AppDeploy):
     def __init__(self, config: ConfigHelper) -> None:
         super().__init__(config, "Zip Application")
+        self.install_cmd = config.get("install_cmd", None)
         self._configure_path(config, False)
         if self.type == AppType.ZIP:
             self._configure_virtualenv(config)

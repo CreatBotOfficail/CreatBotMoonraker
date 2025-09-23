@@ -14,6 +14,7 @@ from ..common import (
     WebRequest,
     BaseRemoteConnection,
     TransportType,
+    UserInfo,
 )
 from ..utils import ServerError, parse_ip_address
 
@@ -75,6 +76,16 @@ class WebsocketManager:
             def notify_handler(*args):
                 self.notify_clients(notify_name, args)
                 self._process_logout(*args)
+        elif event_type == "user_change":
+            def notify_handler(*args):
+                ip, curUser, newUser = args
+                data: Dict[str, Any] = {
+                    "ip": str(ip),
+                    "curUser": None if curUser is None else curUser.username,
+                    "newUser": None if newUser is None else newUser.username
+                }
+                self.notify_clients(notify_name, [data])
+                self._process_user_change(*args)
         else:
             def notify_handler(*args):
                 self.notify_clients(notify_name, args)
@@ -130,6 +141,16 @@ class WebsocketManager:
         name = user["username"]
         for sc in self.clients.values():
             sc.on_user_logout(name)
+
+    def _process_user_change(self, ip: Optional[IPAddress],
+                             curUser: Optional[UserInfo],
+                             newUser: Optional[UserInfo]) -> None:
+        for sc in self.clients.values():
+            if ip is None or sc.ip_addr == ip:
+                if curUser is not None:
+                    sc.on_user_logout(curUser.username)
+                if newUser is not None:
+                    sc.on_user_login(newUser)
 
     def has_socket(self, ws_id: int) -> bool:
         return ws_id in self.clients
@@ -256,6 +277,7 @@ class WebSocket(WebSocketHandler, BaseRemoteConnection):
         self.set_nodelay(True)
         self._connected_time = self.eventloop.get_loop_time()
         agent = self.request.headers.get("User-Agent", "")
+        mqttUser = self.request.headers.get("X-MQTT-User", None)
         is_proxy = False
         if (
             "X-Forwarded-For" in self.request.headers or
@@ -265,6 +287,7 @@ class WebSocket(WebSocketHandler, BaseRemoteConnection):
         logging.info(f"Websocket Opened: ID: {self.uid}, "
                      f"Proxied: {is_proxy}, "
                      f"User Agent: {agent}, "
+                     f"MQTT User: {mqttUser}, "
                      f"Host Name: {self.hostname}")
         self.wsm.add_client(self)
 
@@ -314,6 +337,8 @@ class WebSocket(WebSocketHandler, BaseRemoteConnection):
 
     def on_user_logout(self, user: str) -> bool:
         if super().on_user_logout(user):
+            kconn: Klippy = self.server.lookup_component("klippy_connection")
+            kconn.remove_subscription(self)
             self._need_auth = True
             return True
         return False
@@ -369,6 +394,7 @@ class BridgeSocket(WebSocketHandler):
         self.set_nodelay(True)
         self._connected_time = self.eventloop.get_loop_time()
         agent = self.request.headers.get("User-Agent", "")
+        mqttUser = self.request.headers.get("X-MQTT-User", None)
         is_proxy = False
         if (
             "X-Forwarded-For" in self.request.headers or
@@ -378,6 +404,7 @@ class BridgeSocket(WebSocketHandler):
         logging.info(f"Bridge Socket Opened: ID: {self.uid}, "
                      f"Proxied: {is_proxy}, "
                      f"User Agent: {agent}, "
+                     f"MQTT User: {mqttUser}, "
                      f"Host Name: {self.hostname}")
         self.wsm.add_bridge_connection(self)
 

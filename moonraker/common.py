@@ -448,6 +448,12 @@ class BaseRemoteConnection(APITransport):
             return True
         return False
 
+    def on_user_login(self, newUser: Optional[UserInfo]) -> bool:
+        if self._need_auth:
+            self.user_info = newUser
+            return True
+        return False
+
     async def _write_messages(self):
         if self.is_closed:
             self.message_buf = []

@@ -207,8 +207,7 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
         self.unique_id = uuid.UUID(self.server.get_app_args()["instance_uuid"])
         self.name: str = "CreatBot"
         machine: Machine = self.server.lookup_component("machine")
-        self.serial_number = machine.get_system_info().get("cpu_info", {}).get("serial_number", "N/A")
-        self.serial_number = self.serial_number[1:].upper()
+        self.serial_number = machine.get_machine_uuid()
         self.base_url: str = ""
         self.response_headers: List[str] = []
         self.registered: bool = False

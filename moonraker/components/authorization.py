@@ -65,8 +65,9 @@ USER_TABLE = "authorized_users"
 AUTH_SOURCES = ["moonraker", "ldap"]
 HASH_ITER = 100000
 API_USER = "_API_KEY_USER_"
+SUPER_USER = "_SUPER_USER_"
 TRUSTED_USER = "_TRUSTED_USER_"
-RESERVED_USERS = [API_USER, TRUSTED_USER]
+RESERVED_USERS = [API_USER, TRUSTED_USER, SUPER_USER]
 JWT_EXP_TIME = datetime.timedelta(hours=1)
 JWT_HEADER = {
     'alg': "EdDSA",
@@ -126,6 +127,7 @@ class Authorization:
         self.server = config.get_server()
         self.login_timeout = config.getint('login_timeout', 90)
         self.force_logins = config.getboolean('force_logins', False)
+        self.force_verify = config.getboolean('force_verify', False)
         self.default_source = config.get('default_source', "moonraker").lower()
         self.enable_api_key = config.getboolean('enable_api_key', True)
         self.max_logins = config.getint("max_login_attempts", None, above=0)
@@ -181,6 +183,7 @@ class Authorization:
         self.trusted_ips: List[IPAddr] = []
         self.trusted_ranges: List[IPNetwork] = []
         self.trusted_domains: List[str] = []
+        self.trusted_mqtt_clients: List[str] = [] # MQTT client id
         for val in config.getlist('trusted_clients', []):
             # Check IP address
             try:
@@ -243,6 +246,19 @@ class Authorization:
             auth_required=False
         )
         self.server.register_endpoint(
+            "/access/super_login", RequestType.POST, self._handle_super_login,
+            transports=TransportType.HTTP | TransportType.WEBSOCKET,
+            auth_required=False
+        )
+        self.server.register_endpoint(
+            "/access/super_logout", RequestType.POST, self._handle_super_logout,
+            transports=TransportType.HTTP | TransportType.WEBSOCKET,
+        )
+        self.server.register_endpoint(
+            "/access/super_reset", RequestType.POST, self._handle_super_reset,
+            transports=TransportType.HTTP | TransportType.WEBSOCKET,
+        )
+        self.server.register_endpoint(
             "/access/user", RequestType.all(), self._handle_user_request,
             transports=TransportType.HTTP | TransportType.WEBSOCKET
         )
@@ -275,6 +291,12 @@ class Authorization:
         )
         wsm.register_notification(
             "authorization:user_logged_out", event_type="logout"
+        )
+        wsm.register_notification(
+            "authorization:user_reset_pwd", event_type="logout"
+        )
+        wsm.register_notification(
+            "authorization:user_change", event_type="user_change"
         )
 
     async def component_init(self) -> None:
@@ -315,6 +337,17 @@ class Authorization:
             self.users[API_USER] = UserInfo(username=API_USER, password=self.api_key)
         else:
             self.api_key = api_user.password
+        super_user: Optional[UserInfo] = self.users.get(SUPER_USER, None)
+        if super_user is None:
+            need_sync = True
+            salt = secrets.token_bytes(32)
+            hashed_pass = hashlib.pbkdf2_hmac(
+                'sha256', 'admin'.encode(), salt, HASH_ITER).hex()
+            self.users[SUPER_USER] = UserInfo(
+                username=SUPER_USER,
+                password=hashed_pass,
+                salt=salt.hex(),
+            )
         for username, user_info in list(self.users.items()):
             if username == API_USER:
                 continue
@@ -390,11 +423,81 @@ class Authorization:
             "action": "user_logged_out"
         }
 
+    async def _handle_super_login(self, web_request: WebRequest) -> Dict[str, Any]:
+        ip = web_request.get_ip_address()
+        trusted_user = await self._check_trusted_connection(ip)
+        if trusted_user is not None:
+            password: str = web_request.get_str('password')
+            user_info = self.users[SUPER_USER]
+            salt = bytes.fromhex(user_info.salt)
+            hashed_pass = hashlib.pbkdf2_hmac(
+                'sha256', password.encode(), salt, HASH_ITER).hex()
+            if (hashed_pass == user_info.password):
+                self._upgrade_trusted_user(ip)
+            else:
+                raise self.server.error("Invalid Password")
+        else:
+            raise self.server.error("The ip address is not trusted")
+        curUser = None if self.force_verify else UserInfo(TRUSTED_USER, "")
+        eventloop = self.server.get_event_loop()
+        eventloop.delay_callback(
+            .005, self.server.send_event, "authorization:user_change",
+            ip, curUser, self.users[SUPER_USER]
+        )
+        return {
+            "username": SUPER_USER,
+            "action": "trusted_user_super_login"
+        }
+
+    async def _handle_super_logout(self, web_request: WebRequest) -> Dict[str, Any]:
+        ip = web_request.get_ip_address()
+        trusted_user = await self._check_trusted_connection(ip)
+        if trusted_user is not None:
+            self._reset_trusted_user(ip)
+        else:
+            raise self.server.error("The ip address is not trusted")
+        newUser = None if self.force_verify else UserInfo(TRUSTED_USER, "")
+        eventloop = self.server.get_event_loop()
+        eventloop.delay_callback(
+            .005, self.server.send_event, "authorization:user_change",
+            ip, self.users[SUPER_USER], newUser
+        )
+        return {
+            "username": SUPER_USER,
+            "action": "trusted_user_super_logout"
+        }
+
+    async def _handle_super_reset(self, web_request: WebRequest) -> Dict[str, Any]:
+        salt = bytes.fromhex(self.users[SUPER_USER].salt)
+        hashed_pass = hashlib.pbkdf2_hmac(
+            'sha256', 'admin'.encode(), salt, HASH_ITER).hex()
+        self.users[SUPER_USER].password = hashed_pass
+        self._reset_trusted_user()
+        self._reset_mqtt_user()
+        await self._sync_user(SUPER_USER)
+        eventloop = self.server.get_event_loop()
+        if self.force_verify:
+            eventloop.delay_callback(
+                .005, self.server.send_event,
+                "authorization:user_reset_pwd",
+                {'username': SUPER_USER}
+            )
+        else:
+            eventloop.delay_callback(
+                .005, self.server.send_event,
+                "authorization:user_change",
+                None, self.users[SUPER_USER], UserInfo(TRUSTED_USER, "")
+            )
+        return {
+            'username': SUPER_USER,
+            'action': "trusted_user_super_reset"
+        }
+
     async def _handle_info_request(self, web_request: WebRequest) -> Dict[str, Any]:
         sources = ["moonraker"]
         if self.ldap is not None:
             sources.append("ldap")
-        login_req = self.force_logins and len(self.users) > 1
+        login_req = self.force_logins and len(self.users) > 2
         request_trusted: Optional[bool] = None
         user = web_request.get_current_user()
         req_ip = web_request.ip_addr
@@ -406,6 +509,7 @@ class Authorization:
             "default_source": self.default_source,
             "available_sources": sources,
             "login_required": login_req,
+            "verify_required": login_req | self.force_verify,
             "trusted": request_trusted
         }
 
@@ -461,7 +565,7 @@ class Authorization:
                                    ) -> Dict[str, List[Dict[str, Any]]]:
         user_list = []
         for user in self.users.values():
-            if user.username == API_USER:
+            if user.username in [API_USER, SUPER_USER]:
                 continue
             user_list.append({
                 'username': user.username,
@@ -484,7 +588,7 @@ class Authorization:
         if user_info.source == "ldap":
             raise self.server.error(
                 f"Can´t Reset password for ldap user {username}")
-        if username in RESERVED_USERS:
+        if username in RESERVED_USERS and username != SUPER_USER:
             raise self.server.error(
                 f"Invalid Reset Request for user {username}")
         salt = bytes.fromhex(user_info.salt)
@@ -495,7 +599,27 @@ class Authorization:
         new_hashed_pass = hashlib.pbkdf2_hmac(
             'sha256', new_pass.encode(), salt, HASH_ITER).hex()
         self.users[username].password = new_hashed_pass
+        if username == SUPER_USER:
+            self._reset_trusted_user()
+            self._reset_mqtt_user()
+        jwk_id: Optional[str] = self.users[username].jwk_id
+        self.users[username].jwt_secret = None
+        self.users[username].jwk_id = None
+        if jwk_id is not None:
+            self.public_jwks.pop(jwk_id, None)
         await self._sync_user(username)
+        eventloop = self.server.get_event_loop()
+        if username == SUPER_USER and not self.force_verify:
+            eventloop.delay_callback(
+                .001, self.server.send_event,
+                "authorization:user_change",
+                None, self.users[SUPER_USER], UserInfo(TRUSTED_USER, "")
+            )
+        eventloop.delay_callback(
+            .005, self.server.send_event,
+             "authorization:user_reset_pwd",
+            {'username': username}
+        )
         return {
             'username': username,
             'action': "user_password_reset"
@@ -707,6 +831,44 @@ class Authorization:
             return self.users[API_USER]
         raise self.server.error("Invalid API Key", 401)
 
+    def validate_mqtt(self, uuid: str, data: Dict) -> bool:
+        username: str = data.get("username")
+        password: str = data.get("password")
+        if username != SUPER_USER:
+            return False
+        user_info = self.users[username]
+        salt = bytes.fromhex(user_info.salt)
+        hashed_pass = hashlib.pbkdf2_hmac(
+            'sha256', password.encode(), salt, HASH_ITER).hex()
+        if (valid := hashed_pass == user_info.password):
+            if uuid not in self.trusted_mqtt_clients:
+                self.trusted_mqtt_clients.append(uuid)
+        return valid
+
+    def check_mqtt(self, uuid: str) -> bool:
+        return uuid in self.trusted_mqtt_clients
+
+    def get_mqtt_user(self) -> Tuple[str, str]:
+        user_info = self.users[SUPER_USER]
+        return user_info.password, user_info.salt
+
+    def _reset_mqtt_user(self) -> None:
+        self.trusted_mqtt_clients.clear()
+        self.server.send_event("authorization:mqtt_user_reset")
+
+    def _upgrade_trusted_user(self, ip: IPAddr) -> None:
+        if ip in self.trusted_users:
+            self.trusted_users[ip]["user"] = self.users[SUPER_USER]
+
+    def _reset_trusted_user(self, ip: Optional[IPAddr] = None) -> None:
+        trusted_user = UserInfo(TRUSTED_USER, "")
+        if ip is None:
+            for ip_key, user_info in list(self.trusted_users.items()):
+                if user_info["user"] == self.users[SUPER_USER]:
+                    self.trusted_users[ip_key]["user"] = trusted_user
+        elif ip in self.trusted_users:
+            self.trusted_users[ip]["user"] = trusted_user
+
     def _load_private_key(self, secret: str) -> Signer:
         try:
             key = Signer(bytes.fromhex(secret))
@@ -878,9 +1040,16 @@ class Authorization:
             if key and key == self.api_key:
                 return self.users[API_USER]
 
+        # Check MQTT User
+        mqttUser: Optional[str] = request.headers.get("X-MQTT-User")
+        if mqttUser is not None:
+            if mqttUser in self.trusted_mqtt_clients:
+                return self.users[SUPER_USER]
+            raise HTTPError(401, "Unauthorized, MQTT user must be authenticated first.")
+
         # If the force_logins option is enabled and at least one user is created
         # then trusted user authentication is disabled
-        if self.force_logins and len(self.users) > 1:
+        if self.force_logins and len(self.users) > 2:
             if not auth_required:
                 return None
             raise HTTPError(401, "Unauthorized, Force Logins Enabled")
@@ -889,6 +1058,13 @@ class Authorization:
         # then it is acceptable to return None
         trusted_user = await self._check_trusted_connection(ip)
         if trusted_user is not None:
+            if self.force_verify:
+                if trusted_user == self.users[SUPER_USER]:
+                    return trusted_user
+                elif not auth_required:
+                    return None
+                else:
+                    raise HTTPError(401, "Unauthorized, Trusted user upgrade required.")
             return trusted_user
         if not auth_required:
             return None
