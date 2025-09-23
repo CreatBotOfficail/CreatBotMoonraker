@@ -195,6 +195,8 @@ class Machine:
             logging.exception("Failed to read moonraker.asvc")
             data = default_svcs
         svcs = [svc.strip() for svc in data.split("\n") if svc.strip()]
+        if "go2rtc" not in svcs:
+            svcs.append("go2rtc")
         for svc in svcs:
             if svc.endswith(".service"):
                 svc = svc.rsplit(".", 1)[0]
@@ -263,6 +265,10 @@ class Machine:
 
     def get_moonraker_service_info(self):
         return dict(self.moonraker_service_info)
+
+    def get_machine_uuid(self) -> str:
+        uuid = self.system_info["cpu_info"]["serial_number"] or str(__import__("uuid").getnode())
+        return uuid.zfill(15)[-15:].upper()
 
     async def wait_for_init(
         self, timeout: Optional[float] = None

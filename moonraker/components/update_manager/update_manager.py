@@ -189,6 +189,14 @@ class UpdateManager:
         return self.updaters
 
     async def component_init(self) -> None:
+        for updater in list(self.updaters.values()):
+            install_cmd = getattr(updater, "install_cmd", None)
+            if install_cmd:
+                try:
+                    await self.initial_install(updater)
+                except Exception as e:
+                    logging.error(f"[{updater.name}] Initial install failed: {e}")
+
         await self.instance_tracker.set_instance_id()
         # Prune stale data from the database
         umdb = self.cmd_helper.get_umdb()
@@ -205,6 +213,71 @@ class UpdateManager:
             self.event_loop.register_callback(
                 self._handle_auto_refresh, self.event_loop.get_loop_time()
             )
+
+    async def initial_install(self, updater):
+        # Check if installation is already completed first
+        if await self._is_installation_completed(updater):
+            logging.info(f"[Installer] {updater.name} already installed, skipping initial install")
+            return
+
+        install_cmd = updater.install_cmd
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        scripts_base = os.path.abspath(os.path.join(current_dir, "../../../scripts"))
+        script_path = os.path.join(scripts_base, install_cmd)
+
+        if not os.path.isfile(script_path):
+            raise FileNotFoundError(f"Install script not found: {script_path}")
+
+        try:
+            await self.cmd_helper.run_cmd(f"{script_path} creatbot", timeout=600.0, notify=True,
+                log_stderr=True
+            )
+            logging.info(f"[Installer] {updater.name} installation completed successfully")
+            await self._mark_installation_completed(updater)
+
+            if updater.name == "go2rtc" and "crowsnest" in self.updaters:
+                self.updaters.pop("crowsnest", None)
+                logging.info(f"[Installer] Removed obsolete crowsnest updater")
+            self.event_loop.delay_callback(10, self.handle_auto_install, updater)
+        except Exception as e:
+            raise RuntimeError(f"Install command failed for '{updater.name}': {e}") from e
+
+    async def handle_auto_install(self, updater):
+        logging.info(f"Automatically upgrade {updater.name}")
+        await updater.update()
+
+    def _get_status_file_path(self, updater) -> str:
+        install_cmd = updater.install_cmd
+
+        script_name = os.path.splitext(install_cmd)[0]
+        status_filename = f"{script_name}_status"
+
+        return os.path.expanduser(f"~/.{status_filename}")
+
+    async def _is_installation_completed(self, updater) -> bool:
+        status_file = self._get_status_file_path(updater)
+
+        if os.path.exists(status_file):
+            try:
+                with open(status_file, 'r') as f:
+                    status = f.read().strip()
+                if status == "COMPLETED":
+                    logging.info(f"[Installer] {updater.name} installation already completed (status file found)")
+                    return True
+            except Exception as e:
+                logging.warning(f"[Installer] Failed to read status file {status_file}: {e}")
+
+        return False
+
+    async def _mark_installation_completed(self, updater) -> None:
+        status_file = self._get_status_file_path(updater)
+
+        try:
+            with open(status_file, 'w') as f:
+                f.write("COMPLETED")
+            logging.info(f"[Installer] Marked {updater.name} installation as completed in {status_file}")
+        except Exception as e:
+            logging.error(f"[Installer] Failed to create status file {status_file}: {e}")
 
     def register_updater(self, name: str, config: Dict[str, str]) -> None:
         if name in self.updaters:
