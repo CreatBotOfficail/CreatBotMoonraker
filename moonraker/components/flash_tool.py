@@ -25,7 +25,7 @@ import contextlib
 from typing import TYPE_CHECKING, Dict, List, Optional, Union, Any
 
 if TYPE_CHECKING:
-    from ..server import Server
+    from firmware_manager import FirmwareUpdateNotifier as Notifier
 
 HAS_SERIAL = True
 try:
@@ -37,11 +37,42 @@ except ModuleNotFoundError:
 def output_line(msg: str) -> None:
     sys.stdout.write(msg + "\n")
     sys.stdout.flush()
-    logging.info(f"{msg}\n")
+    logging.info(f"{msg}")
 
 def output(msg: str) -> None:
     sys.stdout.write(msg)
     sys.stdout.flush()
+
+class ProgressTracker:
+    def __init__(self, mcu: str, progress_type: str = "update") -> None:
+        self.mcu = mcu
+        self.progress_type = progress_type
+        self.started = False
+        self.content = ""
+        self.last_percent = 0
+
+    def output_progress(self, msg: str, current_percent: int = 0,
+                       is_start: bool = False, is_complete: bool = False) -> None:
+        if is_start and not self.started:
+            self.started = True
+            self.content = "["
+            self.last_percent = 0
+            return
+
+        if is_complete and self.started:
+            self.content += msg + "]"
+            logging.info(f"{self.progress_type} {self.mcu} progress {current_percent}% : {self.content}")
+            self.started = False
+            self.content = ""
+            return
+
+        if self.started:
+            self.content += msg
+            if current_percent > self.last_percent:
+                logging.info(f"{self.progress_type} {self.mcu} progress {current_percent}%  : {self.content}")
+                self.last_percent = current_percent
+        else:
+            logging.info(msg)
 
 # Standard crc16 ccitt, take from msgproto.py in Klipper
 def crc16_ccitt(buf: Union[bytes, bytearray]) -> int:
@@ -216,11 +247,11 @@ def convert_usbsn_to_uuid(serial_number: str) -> int:
 class CanFlasher:
     def __init__(
         self,
-        server: Server,
+        notifier: Notifier,
         node: CanNode,
         fw_file: pathlib.Path
     ) -> None:
-        self.server = server
+        self.notifier = notifier
         self.node = node
         self.firmware_path = fw_file
         self.fw_sha = hashlib.sha1()
@@ -232,23 +263,6 @@ class CanFlasher:
         self.full_complete = False
         self.klipper_dict: Optional[Dict[str, Any]] = None
         self._check_binary()
-
-    def notify_update_response(
-            self, resp: Union[str, bytes], is_complete: bool = False
-        ) -> None:
-            if self.firmware_path is None:
-                return
-            resp = resp.strip()
-            if isinstance(resp, bytes):
-                resp = resp.decode()
-            done = is_complete
-            done &= self.full_complete
-            notification = {
-                'message': resp,
-                'application': "firmware",
-                'complete': "done"}
-            self.server.send_event(
-                "update_manager:update_response", notification)
 
     def _check_binary(self) -> None:
         """
@@ -435,9 +449,14 @@ class CanFlasher:
         file_name = firmware.split('/')[-1]
         mapping = {
             "F446": "mcu",
+            "G0B1": "mcu",
             "F072_L": "lift mcu",
             "F072_R": "right mcu",
             "F072": "tool mcu",
+            "G431_L": "tool mcu",
+            "motion": "motion mcu",
+            "detect": "detect mcu",
+            "AC": "AC control mcu"
         }
         for key in mapping:
             if file_name.startswith(key):
@@ -447,16 +466,14 @@ class CanFlasher:
     async def send_file(self):
         last_percent = 0
         output_line("Flashing '%s'..." % (self.firmware_path))
-        output("\n[")
+        update_tracker = ProgressTracker(self._get_mcu_from_path(), "update")
+        update_tracker.output_progress("", current_percent=0, is_start=True)
         with open(self.firmware_path, 'rb') as f:
             f.seek(0, os.SEEK_END)
             self.file_size = f.tell()
             f.seek(0)
             flash_address = self.app_start_addr
             recd_addr = 0
-            uinfo: Dict[str, Any] = {}
-            uinfo['busy'] = True
-            self.server.send_event("update_manager:update_refreshed", uinfo)
             while True:
                 buf = f.read(self.block_size)
                 if not buf:
@@ -485,23 +502,26 @@ class CanFlasher:
                 pct = int(uploaded / float(self.file_size) * 100 + .5)
                 if pct >= last_percent + 2:
                     last_percent += 2.
-                    output("#")
+                    if pct % 10 == 0 and pct < 100:
+                        update_tracker.output_progress("#", current_percent=pct)
                     totals = (
                         f"{uploaded // 1024} KiB / "
                         f"{float(self.file_size) // 1024} KiB"
                     )
                     if pct == 100:
                         self.full_complete = True
-                    self.notify_update_response(
+                        update_tracker.output_progress("", current_percent=100, is_complete=True)
+                    self.notifier.notify_update_response(
                         f"Updataing {self._get_mcu_from_path()}: {totals} [{pct}%]")
             resp = await self.send_command('SEND_EOF')
             page_count, = struct.unpack("<I", resp)
-            output_line("]\n\nWrite complete: %d pages" % (page_count))
+            output_line("\nWrite complete: %d pages" % (page_count))
 
     async def verify_file(self):
         last_percent = 0
         output_line("Verifying (block count = %d)..." % (self.block_count,))
-        output("\n[")
+        verify_tracker = ProgressTracker(self._get_mcu_from_path(), "verify")
+        verify_tracker.output_progress("", current_percent=0, is_start=True)
         ver_sha = hashlib.sha1()
         for i in range(self.block_count):
             flash_address = i * self.block_size + self.app_start_addr
@@ -523,19 +543,22 @@ class CanFlasher:
             pct = int(i * self.block_size / float(self.file_size) * 100 + .5)
             if pct >= last_percent + 2:
                 last_percent += 2
-                output("#")
+                if pct % 10 == 0 and pct < 100:
+                    verify_tracker.output_progress("#", current_percent=pct)
                 totals = (
                     f"{(i * self.block_size) // 1024} KiB / "
                     f"{float(self.file_size) // 1024} KiB"
                 )
-                self.notify_update_response(
-                    f"Verify firmware: {totals} [{pct}%]")
+                if pct == 100:
+                    verify_tracker.output_progress("", current_percent=100, is_complete=True)
+                self.notifier.notify_update_response(
+                    f"Verify {self._get_mcu_from_path()} firmware: {totals} [{pct}%]", is_complete=pct == 100)
         ver_hex = ver_sha.hexdigest().upper()
         fw_hex = self.fw_sha.hexdigest().upper()
         if ver_hex != fw_hex:
             raise FlashError("Checksum mismatch: Expected %s, Received %s"
                                 % (fw_hex, ver_hex))
-        output_line("]\n\nVerification Complete: SHA = %s" % (ver_hex))
+        output_line("\nVerification Complete: SHA = %s" % (ver_hex))
 
     async def finish(self):
         await self.send_command("COMPLETE")
@@ -625,10 +648,10 @@ class BaseSocket:
         raise NotImplementedError()
 
 class CanSocket(BaseSocket):
-    def __init__(self, server: Server, args: argparse.Namespace) -> None:
+    def __init__(self, notifier: notifier, args: argparse.Namespace) -> None:
         super().__init__(args)
         self._uuid = 0
-        self.server = server
+        self.notifier = notifier
         self._can_interface = args.interface
         self._can_bridge_path: pathlib.Path | None = None
         self._can_bridge_serial_path: pathlib.Path | None = None
@@ -883,7 +906,7 @@ class CanSocket(BaseSocket):
             await self._query_uuids()
             return
         node = self._set_node_id(self._uuid)
-        flasher = CanFlasher(self.server, node, self._fw_path)
+        flasher = CanFlasher(self.notifier, node, self._fw_path)
         await asyncio.sleep(.5)
         try:
             await flasher.connect_btl()
@@ -908,9 +931,9 @@ class CanSocket(BaseSocket):
         self.cansock.close()
 
 class SerialSocket(BaseSocket):
-    def __init__(self, server: Server, args: argparse.Namespace) -> None:
+    def __init__(self, notifier: Notifier, args: argparse.Namespace) -> None:
         super().__init__(args)
-        self.server = server
+        self.notifier = notifier
         self._device = args.device
         self._baud = args.baud
         if not HAS_SERIAL:
@@ -1116,7 +1139,7 @@ class SerialSocket(BaseSocket):
             usb_prod = ""
         self.serial = self._open_device(device, self._baud)
         self._loop.add_reader(self.serial.fileno(), self._handle_response)
-        flasher = CanFlasher(self.server, self.node, self._fw_path)
+        flasher = CanFlasher(self.notifier, self.node, self._fw_path)
         try:
             if self._has_double_buffering(usb_prod):
                 # Prime the USB Connection with a dummy command.  This is
@@ -1144,7 +1167,7 @@ class SerialSocket(BaseSocket):
 class FlashTool:
     def __init__(
         self,
-        server: Server,
+        notifier,
         device=None,
         baud=250000,
         interface="can0",
@@ -1155,7 +1178,7 @@ class FlashTool:
         request_bootloader=False,
         status=False
     ):
-        self.server = server
+        self.notifier = notifier
         self.args = argparse.Namespace(
             device=device,
             baud=baud,
@@ -1173,14 +1196,14 @@ class FlashTool:
         sock: CanSocket | SerialSocket | None = None
         try:
             if iscan:
-                sock = CanSocket(self.server, self.args)
+                sock = CanSocket(self.notifier, self.args)
             else:
-                sock = SerialSocket(self.server, self.args)
+                sock = SerialSocket(self.notifier, self.args)
             await sock.run()
             if sock.is_usb_can_bridge and not sock.is_bootloader_req:
                 self.args.device = str(sock.usb_serial_path)
                 sock.close()
-                sock = SerialSocket(self.server, self.args)
+                sock = SerialSocket(self.notifier, self.args)
                 await sock.run()
         except Exception:
             logging.exception("Flash Tool Error")
