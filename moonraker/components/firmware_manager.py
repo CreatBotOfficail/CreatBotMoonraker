@@ -278,7 +278,7 @@ class FirmwareUpdate:
                         flash_tool = FlashTool(
                             self.notifier,
                             device=MAIN_DEV,
-                            firmware=os.path.join(KLIPPER_DIR, firmware_file)
+                            firmware=firmware_path
                         )
                         exit_code = await flash_tool.run()
                         if exit_code == 0:
