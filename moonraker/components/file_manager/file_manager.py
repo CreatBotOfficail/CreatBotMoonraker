@@ -197,10 +197,10 @@ class FileManager:
         if klipper_path is not None:
             self.reserved_paths.pop("klipper", None)
             self.add_reserved_path("klipper", klipper_path)
-            example_cfg_path = os.path.join(klipper_path, "config")
-            self.register_directory("config_examples", example_cfg_path)
-            docs_path = os.path.join(klipper_path, "docs")
-            self.register_directory("docs", docs_path)
+            #example_cfg_path = os.path.join(klipper_path, "config")
+            #self.register_directory("config_examples", example_cfg_path)
+            #docs_path = os.path.join(klipper_path, "docs")
+            #self.register_directory("docs", docs_path)
 
         # Register log path
         log_file = paths.get('log_file')
