@@ -26,7 +26,8 @@ from typing import (
     List,
     Any,
     Dict,
-    Tuple
+    Tuple,
+    Optional
 )
 
 if TYPE_CHECKING:
@@ -43,6 +44,74 @@ class NozzleAlgo:
     detector: cv2.SimpleBlobDetector
     color: tuple
     aid: int
+
+@dataclass
+class AlgorithmConfig:
+    idx: int
+    mode: str
+    color: Tuple[int, int, int]
+    algo_id: int
+
+@dataclass
+class BlobParams:
+    min_area: int
+    max_area: int
+    min_circularity: float
+    min_convexity: float
+    filter_by_area: bool
+    filter_by_circularity: bool
+    filter_by_convexity: bool
+
+    def to_opencv_params(self, scale: float = 1.0) -> cv2.SimpleBlobDetector_Params:
+        params = cv2.SimpleBlobDetector_Params()
+        params.filterByArea = self.filter_by_area
+        params.filterByCircularity = self.filter_by_circularity
+        params.filterByConvexity = self.filter_by_convexity
+
+        params.minArea = int(self.min_area * (scale ** 2))
+        params.maxArea = int(self.max_area * (scale ** 2))
+        params.minCircularity = self.min_circularity
+        params.minConvexity = self.min_convexity
+
+        return params
+
+class AlgorithmSelector:
+    def __init__(self, configs: List[AlgorithmConfig]):
+        self.configs = configs
+        self.current_algorithm: Optional[int] = None
+        self.performance_stats: Dict[int, Dict[str, int]] = {}
+        self.reset_stats()
+
+    def reset_stats(self):
+        for cfg in self.configs:
+            self.performance_stats[cfg.algo_id] = {
+                'success': 0,
+                'attempts': 0,
+                'recent_success': 0
+            }
+
+    def update_performance(self, algo_id: int, success: bool):
+        if algo_id not in self.performance_stats:
+            return
+
+        stats = self.performance_stats[algo_id]
+        stats['attempts'] += 1
+        if success:
+            stats['success'] += 1
+            stats['recent_success'] += 1
+
+    def get_best_algorithm(self, exclude_current: bool = False) -> Optional[int]:
+        if not self.performance_stats:
+            return None
+
+        valid_algorithms = [algo_id for algo_id in self.performance_stats
+                          if not exclude_current or algo_id != self.current_algorithm]
+
+        if not valid_algorithms:
+            return None
+
+        return max(valid_algorithms,
+                  key=lambda x: self.performance_stats[x].get('recent_success', 0))
 class CameraAglin(APITransport):
     def __init__(self, config: ConfigHelper) -> None:
         super().__init__()
@@ -460,6 +529,59 @@ class CameraAglin(APITransport):
             web_request.set_header('Content-Type', 'text/plain')
             return f"Overlay generation failed: {str(e)}".encode('utf-8')
 
+class ImagePreprocessor:
+    @staticmethod
+    def preprocess_method_0(img: np.ndarray, scale: float = 1.0) -> np.ndarray:
+        yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV)
+        y, u, v = cv2.split(yuv)
+
+        blur_ksize = ImagePreprocessor._get_odd_blur_size(5, scale)
+        y = cv2.GaussianBlur(y, (blur_ksize, blur_ksize), 3 * scale)
+
+        block_size = ImagePreprocessor._get_valid_block_size(25, scale)
+        y = cv2.adaptiveThreshold(
+            y, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, block_size, 2
+        )
+        return cv2.cvtColor(y, cv2.COLOR_GRAY2BGR)
+
+    @staticmethod
+    def preprocess_method_1(img: np.ndarray, scale: float = 1.0) -> np.ndarray:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE)
+
+        blur_ksize = ImagePreprocessor._get_odd_blur_size(5, scale)
+        thresh = cv2.GaussianBlur(thresh, (blur_ksize, blur_ksize), 3 * scale)
+        return cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+
+    @staticmethod
+    def preprocess_method_3(img: np.ndarray, scale: float = 1.0) -> np.ndarray:
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img
+
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        laplacian_abs = np.uint8(np.absolute(laplacian))
+
+        canny_low = int(100 * scale)
+        canny_high = int(200 * scale)
+        canny = cv2.Canny(gray, canny_low, canny_high)
+
+        combined = cv2.bitwise_or(laplacian_abs, canny)
+        return cv2.cvtColor(combined, cv2.COLOR_GRAY2BGR)
+
+    @staticmethod
+    def _get_odd_blur_size(base_size: int, scale: float) -> int:
+        blur_size = int(base_size * scale)
+        blur_size = max(3, blur_size if blur_size % 2 == 1 else blur_size + 1)
+        return blur_size
+
+    @staticmethod
+    def _get_valid_block_size(base_size: int, scale: float) -> int:
+        block_size = int(base_size * scale)
+        block_size = max(3, block_size if block_size % 2 == 1 else block_size + 1)
+        return block_size
 class CameraStreamHandler:
     def __init__(self, camera_url):
         self.camera_url = camera_url
@@ -497,36 +619,190 @@ class CameraStreamHandler:
             self.session = None
 
 class Ktamv_Detection_Manager:
-    uv = [None, None]
-    __algorithm = None
     CFG = [
-        (0, 'standard', (0, 0, 255), 1),
-        (1, 'standard', (0, 255, 0), 2),
-        (2, 'standard', (39, 255, 127), 3),
-        (3, 'standard', (255, 0, 255), 4),
-        (0, 'relaxed',  (255, 0, 0), 5),
-        (1, 'relaxed',  (39, 127, 255), 6),
-        (2, 'relaxed',  (39, 255, 127), 7),
-        (3, 'relaxed',  (0, 255, 255), 8),
+        AlgorithmConfig(0, 'standard', (0, 0, 255), 1),
+        AlgorithmConfig(1, 'standard', (0, 255, 0), 2),
+        AlgorithmConfig(3, 'standard', (255, 0, 255), 3),
+        AlgorithmConfig(0, 'relaxed', (255, 0, 0), 4),
+        AlgorithmConfig(1, 'relaxed', (39, 127, 255), 5),
+        AlgorithmConfig(3, 'relaxed', (0, 255, 255), 6),
     ]
-    def __init__(self, camera_url, save_image=False, *a, **kw):
-        self.__io = CameraStreamHandler(camera_url=camera_url)
-        self._base_params = self._setup_base_params()
-        self._algos = self._build_algorithms()
-        self._success = [0]*(len(self.CFG)+1)
-        self._fail_cnt=0
-        self._last_size=None
-        self._frame_cnt=0
-        self.save_image = save_image
-        if self.save_image:
-            self._creat_save_root()
 
-    def _creat_save_root(self):
+    BASE_WIDTH = 640
+    BASE_HEIGHT = 480
+    DEFAULT_MIN_MATCHES = 5
+    DEFAULT_TIMEOUT = 10.0
+    STATS_RESET_INTERVAL = 100
+
+    def __init__(self, camera_url: str, save_image: bool = False, *args, **kwargs):
+        self.__io = CameraStreamHandler(camera_url=camera_url)
+        self.save_image = save_image
+
+        self._blob_params = self._initialize_blob_params()
+        self._current_algorithm: Optional[int] = None
+        self._last_keypoint_size: Optional[float] = None
+
+        self._stats = self._initialize_statistics()
+
+        self._detector_cache: Dict[Tuple[str, float], Any] = {}
+        self._image_center_cache: Optional[Tuple[int, int]] = None
+
+        if self.save_image:
+            self._initialize_save_directories()
+
+    def _initialize_save_directories(self):
         if not os.path.exists(SAVE_ROOT_DIR):
             os.makedirs(SAVE_ROOT_DIR, exist_ok=True)
             logging.info(f"Created image save root directory: {SAVE_ROOT_DIR}")
 
-    def _create_call_dir(self):
+    def _initialize_blob_params(self) -> Dict[str, BlobParams]:
+        return {
+            'standard': BlobParams(
+                min_area=180,
+                max_area=1000,
+                min_circularity=0.7,
+                min_convexity=0.8,
+                filter_by_area=True,
+                filter_by_circularity=True,
+                filter_by_convexity=False
+            ),
+            'relaxed': BlobParams(
+                min_area=180,
+                max_area=1500,
+                min_circularity=0.6,
+                min_convexity=0.6,
+                filter_by_area=True,
+                filter_by_circularity=True,
+                filter_by_convexity=False
+            )
+        }
+
+    def _initialize_statistics(self) -> Dict[str, Any]:
+        return {
+            'success_counts': {cfg.algo_id: 0 for cfg in self.CFG},
+            'frame_count': 0,
+            'fail_count': 0,
+            'total_attempts': 0
+        }
+
+    def _get_detector(self, mode: str, scale: float) -> cv2.SimpleBlobDetector:
+        cache_key = (mode, round(scale, 2))
+
+        if cache_key not in self._detector_cache:
+            params = self._blob_params[mode].to_opencv_params(scale)
+            self._detector_cache[cache_key] = cv2.SimpleBlobDetector_create(params)
+
+        return self._detector_cache[cache_key]
+
+    def _preprocess_image(self, img: np.ndarray, method_idx: int, scale: float) -> np.ndarray:
+        preprocessor_map = {
+            0: ImagePreprocessor.preprocess_method_0,
+            1: ImagePreprocessor.preprocess_method_1,
+            3: ImagePreprocessor.preprocess_method_3,
+        }
+
+        if method_idx in preprocessor_map:
+            return preprocessor_map[method_idx](img, scale)
+
+        return img
+
+    def _get_image_center(self, img: np.ndarray) -> Tuple[int, int]:
+        rows, cols = img.shape[:2]
+        return (cols // 2, rows // 2)
+
+    def _calculate_scale(self, img_shape: Tuple[int, int, int]) -> float:
+        rows, cols = img_shape[:2]
+        return max(cols / self.BASE_WIDTH, rows / self.BASE_HEIGHT)
+
+    def _get_config_by_id(self, algo_id: int) -> Optional[AlgorithmConfig]:
+        for config in self.CFG:
+            if config.algo_id == algo_id:
+                return config
+        return None
+
+    def _update_detection_stats(self, algo_id: Optional[int], success: bool):
+        if success and algo_id is not None:
+            self._stats['success_counts'][algo_id] += 1
+
+        self._stats['frame_count'] += 1
+        if self._stats['frame_count'] >= self.STATS_RESET_INTERVAL:
+            self._stats = self._initialize_statistics()
+
+    def _detect_with_algorithm(self, img: np.ndarray, config: AlgorithmConfig, scale: float) -> Optional[Tuple[Tuple[int, int], float, np.ndarray]]:
+        detector = self._get_detector(config.mode, scale)
+        processed_img = self._preprocess_image(img, config.idx, scale)
+
+        keypoints = detector.detect(processed_img)
+        if not keypoints:
+            return None
+
+        image_center = self._get_image_center(img)
+        closest_kp = min(keypoints,
+                        key=lambda kp: np.linalg.norm(np.array(kp.pt) - np.array(image_center)))
+
+        center = (int(closest_kp.pt[0]), int(closest_kp.pt[1]))
+        size = closest_kp.size
+
+        return center, size, processed_img
+
+    def _draw_detection_result(self, img: np.ndarray, center: Optional[Tuple[int, int]],
+                             size: Optional[float], color: Optional[Tuple[int, int, int]],
+                             processed_img: Optional[np.ndarray] = None) -> np.ndarray:
+        rows, cols = img.shape[:2]
+        cx, cy = self._get_image_center(img)
+
+        img = cv2.line(img, (cx, 0), (cx, rows), (0, 0, 0), 2)
+        img = cv2.line(img, (0, cy), (cols, cy), (0, 0, 0), 2)
+        img = cv2.line(img, (cx, 0), (cx, rows), (255, 255, 255), 1)
+        img = cv2.line(img, (0, cy), (cols, cy), (255, 255, 255), 1)
+
+        cross_size = max(3, int(min(rows, cols) * 0.01))
+
+        if center is not None and size is not None:
+            radius = int(np.around(size / 2))
+            circle_frame = cv2.circle(
+                img=img,
+                center=center,
+                radius=radius,
+                color=(0, 255, 0),
+                thickness=-1,
+                lineType=cv2.LINE_AA
+            )
+            img = cv2.addWeighted(circle_frame, 0.4, img, 0.6, 0)
+            img = cv2.circle(
+                img=img,
+                center=center,
+                radius=radius,
+                color=(0, 0, 0),
+                thickness=1,
+                lineType=cv2.LINE_AA
+            )
+            x, y = center
+            img = cv2.line(img, (x - cross_size, y), (x + cross_size, y), (255, 255, 255), 2)
+            img = cv2.line(img, (x, y - cross_size), (x, y + cross_size), (255, 255, 255), 2)
+        else:
+            default_radius = int(min(rows, cols) * 0.035)
+            img = cv2.circle(
+                img=img,
+                center=(cx, cy),
+                radius=default_radius,
+                color=(0, 0, 0),
+                thickness=3,
+                lineType=cv2.LINE_AA
+            )
+            img = cv2.circle(
+                img=img,
+                center=(cx, cy),
+                radius=default_radius + 1,
+                color=(0, 0, 255),
+                thickness=1,
+                lineType=cv2.LINE_AA
+            )
+
+        return img
+
+
+    def _create_call_dir(self) -> str:
         timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
         call_dir = os.path.join(SAVE_ROOT_DIR, f"frame_{timestamp}")
         os.makedirs(call_dir, exist_ok=True)
@@ -582,106 +858,34 @@ class Ktamv_Detection_Manager:
             put_frame_func(vis)
 
     def nozzleDetection(self, img):
+        return self.nozzle_detection(img)
+
+    def nozzle_detection(self, img: np.ndarray) -> Tuple[Optional[Tuple[int, int]], Optional[np.ndarray]]:
         if img is None:
             return None, None
-        center = self._detect_blob(img)
-        vis = self._draw(img.copy(), center)
-        return center, vis
 
-    def _setup_base_params(self):
-        return {
-            'standard': {
-                'minArea': 100, 'maxArea': 800,
-                'minCircularity': 0.8,
-                'minConvexity': 0.8,
-                'filterByArea': True,
-                'filterByCircularity': True,
-                'filterByConvexity': False,
-                'filterByInertia': True,
-                'minInertiaRatio': 0.7
-            },
-            'relaxed': {
-                'minArea': 100, 'maxArea': 800,
-                'minCircularity': 0.6,
-                'minConvexity': 0.7,
-                'filterByArea': True,
-                'filterByCircularity': True,
-                'filterByConvexity': False,
-                'filterByInertia': True,
-                'minInertiaRatio': 0.5
-            },
-        }
+        scale = self._calculate_scale(img.shape)
+        image_center = self._get_image_center(img)
 
-    def _build_algorithms(self):
-        def make(pkey):
-            p = cv2.SimpleBlobDetector_Params()
-            src = self._base_params[pkey]
-            for k, v in src.items():
-                setattr(p, k, v)
-            return cv2.SimpleBlobDetector_create(p)
-        return [NozzleAlgo(pre, make(key), color, aid)
-                for pre, key, color, aid in self.CFG]
+        if self._current_algorithm is not None:
+            config = self._get_config_by_id(self._current_algorithm)
+            if config:
+                result = self._detect_with_algorithm(img, config, scale)
+                if result:
+                    center, size, processed_img = result
+                    self._update_detection_stats(config.algo_id, success=True)
+                    return center, self._draw_detection_result(img.copy(), center, size, config.color, processed_img)
 
-    def _preprocess(self, img, idx):
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        if idx == 0:
-            y = cv2.GaussianBlur(gray, (5, 5), 3)
-            return cv2.adaptiveThreshold(y, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                         cv2.THRESH_BINARY, 25, 2)
-        if idx == 1:
-            _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE)
-            return cv2.GaussianBlur(th, (5, 5), 3)
-        if idx == 2:
-            return cv2.medianBlur(gray, 3)
-        return gray
+        for config in self.CFG:
+            result = self._detect_with_algorithm(img, config, scale)
+            if result:
+                center, size, processed_img = result
+                self._current_algorithm = config.algo_id
+                self._update_detection_stats(config.algo_id, success=True)
+                return center, self._draw_detection_result(img.copy(), center, size, config.color, processed_img)
 
-    def _detect_blob(self, img):
-        if self.__algorithm:
-            algo = self._algos[self.__algorithm-1]
-            pt = self._try_algo(img, algo)
-            if pt:
-                self._success[algo.aid] += 1
-                self._fail_cnt = 0
-                return pt
-            self._fail_cnt += 1
-            if self._fail_cnt >= 3:
-                self.__algorithm = None
-        for algo in sorted(self._algos, key=lambda x: self._success[x.aid], reverse=True):
-            pt = self._try_algo(img, algo)
-            if pt:
-                self.__algorithm = algo.aid
-                self._fail_cnt = 0
-                return pt
-        return None
-
-    def _try_algo(self, img, algo):
-        kps = algo.detector.detect(self._preprocess(img, algo.pre_idx))
-        if not kps:
-            return None
-        kp = min(kps, key=lambda k: np.linalg.norm(np.array(k.pt) - np.array([IMG_W//2, IMG_H//2])))
-        x, y, s = kp.pt[0], kp.pt[1], kp.size
-        if not (20 <= x <= IMG_W-20 and 20 <= y <= IMG_H-20):
-            return None
-        if self._last_size and not (0.5 <= s / self._last_size <= 2):
-            return None
-        self._last_size = s
-        return int(round(x)), int(round(y))
-
-    def _draw(self, img, center):
-        cx, cy = IMG_W//2, IMG_H//2
-        if center:
-            cv2.circle(img, center, int(self._last_size//2), (0, 255, 0), -1)
-            cv2.line(img, (center[0]-5, center[1]), (center[0]+5, center[1]), (255, 255, 255), 2)
-            cv2.line(img, (center[0], center[1]-5), (center[0], center[1]+5), (255, 255, 255), 2)
-        else:
-            r = 17
-            cv2.circle(img, (cx, cy), r, (0, 0, 0), 3)
-            cv2.circle(img, (cx, cy), r+1, (0, 0, 255), 1)
-        cv2.line(img, (cx, 0), (cx, IMG_H), (0, 0, 0), 2)
-        cv2.line(img, (0, cy), (IMG_W, cy), (0, 0, 0), 2)
-        cv2.line(img, (cx, 0), (cx, IMG_H), (255, 255, 255), 1)
-        cv2.line(img, (0, cy), (IMG_W, cy), (255, 255, 255), 1)
-        return img
+        self._update_detection_stats(None, success=False)
+        return None, self._draw_detection_result(img.copy(), None, None, None, None)
 
 def load_component(config: ConfigHelper) -> CameraAglin:
     return CameraAglin(config)
