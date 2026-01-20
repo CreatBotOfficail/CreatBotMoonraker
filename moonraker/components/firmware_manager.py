@@ -82,7 +82,7 @@ class FirmwareUpdate:
                     f"{device:<12} "
                     f"{info['canbus_uuid']:<14} "
                     f"{info.get('mcu_version', 'Unknown'):<9} "
-                    f"{info['mcu_type']:<14} "
+                    f"{info.get('mcu_type', 'Unknown'):<14} "
                     f"{'Yes' if info['need_update'] else 'No':<12}"
                 )
             header = f"{'Device':<12} {'CANbus UUID':<14} {'Version':<9} {'MCU Type':<14} {'Update':<7}"
@@ -158,7 +158,7 @@ class FirmwareUpdate:
                 mcu_data = response.get(mcu, {})
                 if mcu_data:
                     mcu_version: str = mcu_data.get('mcu_version', '')
-                    mcu_constants: str = mcu_data.get('mcu_constants', '')
+                    mcu_constants: Dict[str, str] = mcu_data.get('mcu_constants', {})
                     mcu_type: str = mcu_constants.get('MCU', '')
                     if mcu == "mcu":
                         self.min_version = mcu_data.get('min_firmware_version', "")
@@ -260,7 +260,7 @@ class FirmwareUpdate:
             }
         for mcu_name, mcu_data in self.mcu_info.items():
             if mcu_name == "mcu" and mcu_data.get('need_update', False):
-                firmware_name = MCU_FIRMWARE_MAP[mcu_data.get('mcu_type', '')]
+                firmware_name = MCU_FIRMWARE_MAP.get(mcu_data.get('mcu_type', ''))
                 firmware_path = os.path.join(KLIPPER_DIR, firmware_name)
                 if firmware_name and self._check_firmware_exists(firmware_path):
                     self.notifier._set_current_firmware(mcu_name)
