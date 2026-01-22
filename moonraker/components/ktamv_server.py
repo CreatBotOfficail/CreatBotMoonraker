@@ -591,7 +591,7 @@ class Ktamv_Detection_Manager:
     def _setup_base_params(self):
         return {
             'standard': {
-                'minArea': 100, 'maxArea': 800,
+                'minArea': 200, 'maxArea': 1000,
                 'minCircularity': 0.8,
                 'minConvexity': 0.8,
                 'filterByArea': True,
@@ -601,7 +601,7 @@ class Ktamv_Detection_Manager:
                 'minInertiaRatio': 0.7
             },
             'relaxed': {
-                'minArea': 100, 'maxArea': 800,
+                'minArea': 150, 'maxArea': 1500,
                 'minCircularity': 0.6,
                 'minConvexity': 0.7,
                 'filterByArea': True,
