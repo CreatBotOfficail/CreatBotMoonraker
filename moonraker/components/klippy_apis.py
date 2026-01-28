@@ -39,6 +39,7 @@ SUBSCRIPTION_ENDPOINT = "objects/subscribe"
 STATUS_ENDPOINT = "objects/query"
 OBJ_LIST_ENDPOINT = "objects/list"
 REG_METHOD_ENDPOINT = "register_remote_method"
+KTAMV_ENDPOINT = "ktamv/result"
 
 class KlippyAPI(APITransport):
     def __init__(self, config: ConfigHelper) -> None:
@@ -122,6 +123,15 @@ class KlippyAPI(APITransport):
         params = {'script': script}
         result = await self._send_klippy_request(
             GCODE_ENDPOINT, params, default)
+        return result
+
+    async def ktamv_result(self,
+                        result: Dict[str, Any],
+                        default: Any = Sentinel.MISSING
+                        ) -> str:
+        params = {'objects': result}
+        result = await self._send_klippy_request(
+            KTAMV_ENDPOINT, params, default)
         return result
 
     async def start_print(
