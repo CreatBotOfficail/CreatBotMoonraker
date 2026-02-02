@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import asyncio
 from .flash_tool import FlashTool
@@ -136,7 +137,8 @@ class FirmwareUpdate:
         except self.server.error:
             logging.exception("PanelDue initialization request failed")
         config = cfg_status.get('configfile', {}).get('config', {})
-        self.klipper_version = printer_info.get("software_version", "").split('-')[0]
+        version_str = printer_info.get("software_version", "").split('-')[0]
+        self.klipper_version = re.sub(r'^[a-zA-Z]+', '', version_str)
         try:
             self._build_basic_mcu_info(config)
             await self._update_mcu_versions()
