@@ -241,7 +241,14 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
         except AttributeError:
             pass
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        source_ip = socket.inet_aton(source_addr[0])
+        try:
+            source_ip = socket.inet_aton(source_addr[0])
+        except (OSError, TypeError):
+            try:
+                source_ip = socket.inet_aton(
+                    socket.gethostbyname(source_addr[0]))
+            except (OSError, socket.gaierror):
+                source_ip = socket.inet_aton("0.0.0.0")
         target_ip = socket.inet_aton(target_addr[0])
         ip_combo = target_ip + source_ip
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, source_ip)
