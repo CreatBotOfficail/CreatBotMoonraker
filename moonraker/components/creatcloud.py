@@ -120,7 +120,7 @@ class CreatCloud:
     def _get_moonraker_status(self, online: bool = False) -> Dict[str, Any]:
         machine: Machine = self.server.lookup_component("machine")
         return {
-            "ver": 3,
+            "ver": 3.1,
             "cmd": "LWT",
             "uuid": "",
             "imei": self.mqtt.client_id,
@@ -167,7 +167,7 @@ class CreatCloud:
             request: Dict[str, Any] = jsonw.loads(payload)
             msgVer = request.get("ver")
             response = request.copy()
-            if msgVer == 3:  # msg version is 3 or 3.0
+            if self._is_supported_msg_ver(msgVer):
                 msgIMEI = request.get("imei")
                 msgUUID = request.get("uuid")
                 msgCmd = request.get("cmd")
@@ -211,8 +211,21 @@ class CreatCloud:
             response = None
             logging.exception(e)
 
-        if response is not None and topic is not None:
+        if response is not None and response["data"] is not None and topic is not None:
             await self.mqtt.publish_topic(topic, response, self.mqtt.api_qos)
+
+    def _is_supported_msg_ver(self, msg_ver: Any) -> bool:
+        if isinstance(msg_ver, str):
+            msg_ver = msg_ver.strip()
+            if msg_ver in ("3", "3.0", "3.1"):
+                return True
+            try:
+                msg_ver = float(msg_ver)
+            except ValueError:
+                return False
+        if isinstance(msg_ver, (int, float)):
+            return abs(float(msg_ver) - 3.0) < 1e-6 or abs(float(msg_ver) - 3.1) < 1e-6
+        return False
 
     def _get_creatcloud_options(self) -> Optional[Dict[str, Any]]:
         safeOptions: SafeOptions = self.server.lookup_component("safe_options")
