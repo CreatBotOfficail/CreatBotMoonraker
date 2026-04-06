@@ -62,6 +62,8 @@ class FirmwareUpdate:
         self.notifier = None
         self.server.register_event_handler(
             "server:klippy_started", self._on_klippy_startup)
+        if "update_manager" not in self.server.components:
+            self.server.register_notification("update_manager:update_response")
 
     @property
     def klippy_apis(self) -> KlippyAPI:
@@ -176,19 +178,22 @@ class FirmwareUpdate:
     def _compare_versions(self, version1, version2):
         if not version1 or not version2:
             return 0
-        v1_parts = [int(part) for part in version1.split('.') if part]
-        v2_parts = [int(part) for part in version2.split('.') if part]
+        try:
+            v1_parts = [int(part) for part in version1.split('.') if part]
+            v2_parts = [int(part) for part in version2.split('.') if part]
 
-        max_length = max(len(v1_parts), len(v2_parts))
-        v1_parts.extend([0] * (max_length - len(v1_parts)))
-        v2_parts.extend([0] * (max_length - len(v2_parts)))
+            max_length = max(len(v1_parts), len(v2_parts))
+            v1_parts.extend([0] * (max_length - len(v1_parts)))
+            v2_parts.extend([0] * (max_length - len(v2_parts)))
 
-        for i in range(max_length):
-            if v1_parts[i] < v2_parts[i]:
-                return -1
-            elif v1_parts[i] > v2_parts[i]:
-                return 1
-        return 0
+            for i in range(max_length):
+                if v1_parts[i] < v2_parts[i]:
+                    return -1
+                elif v1_parts[i] > v2_parts[i]:
+                    return 1
+            return 0
+        except ValueError:
+            return 0
 
     def _check_mcu_update_needed(self) -> None:
         if self.klipper_version.lower().startswith('v'):
@@ -196,17 +201,21 @@ class FirmwareUpdate:
         logging.info(f"min version: {self.min_version}")
         logging.info(f"klipper version: {self.klipper_version}")
         for mcu in self.mcu_info:
-            mcu_version = self.mcu_info[mcu].get('mcu_version', "")
-            if not mcu_version:
-                self.mcu_info[mcu]['need_update'] = False
-                continue
+            try:
+                mcu_version = self.mcu_info[mcu].get('mcu_version', "")
+                if not mcu_version:
+                    self.mcu_info[mcu]['need_update'] = False
+                    continue
 
-            mcu_vs_min = self._compare_versions(mcu_version, self.min_version)
-            mcu_vs_klipper = self._compare_versions(mcu_version, self.klipper_version)
+                mcu_vs_min = self._compare_versions(mcu_version, self.min_version)
+                mcu_vs_klipper = self._compare_versions(mcu_version, self.klipper_version)
 
-            if mcu_vs_min < 0 or mcu_vs_klipper > 0:
-                self.mcu_info[mcu]['need_update'] = True
-            else:
+                if mcu_vs_min < 0 or mcu_vs_klipper > 0:
+                    self.mcu_info[mcu]['need_update'] = True
+                else:
+                    self.mcu_info[mcu]['need_update'] = False
+            except Exception as e:
+                logging.error(f"Error checking update needed for {mcu}: {e}")
                 self.mcu_info[mcu]['need_update'] = False
 
     def _get_firmware_path(self, mcu_name, mcu_type):
