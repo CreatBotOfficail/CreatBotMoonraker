@@ -163,6 +163,12 @@ class FirmwareUpdate:
                     mcu_version: str = mcu_data.get('mcu_version', '')
                     mcu_constants: Dict[str, str] = mcu_data.get('mcu_constants', {})
                     mcu_type: str = mcu_constants.get('MCU', '')
+                    mcu_firmware_name: str = mcu_data.get('firmware_name')
+                    if not mcu_firmware_name:
+                        if mcu == "mcu":
+                            mcu_firmware_name = mcu
+                        else:
+                            mcu_firmware_name = "L_tool" if mcu == "mcu tool" else mcu.split()[-1]
                     if mcu == "mcu":
                         self.min_version = mcu_data.get('min_firmware_version', "")
                     if mcu_version and mcu_type:
@@ -172,6 +178,7 @@ class FirmwareUpdate:
                             short_version = short_version[1:]
                         self.mcu_info[mcu]['mcu_version'] = short_version
                         self.mcu_info[mcu]['mcu_type'] = mcu_type
+                        self.mcu_info[mcu]['firmware_name'] = mcu_firmware_name
             except Exception as e:
                 logging.error(f"Error querying {mcu}: {e}")
 
@@ -218,32 +225,16 @@ class FirmwareUpdate:
                 logging.error(f"Error checking update needed for {mcu}: {e}")
                 self.mcu_info[mcu]['need_update'] = False
 
-    def _get_firmware_path(self, mcu_name, mcu_type):
-        STANDARD_MCU_FIRMWARE = {
-            "mcu L_tool": "F072_L.bin",
-            "mcu R_tool": "F072_R.bin",
-            "mcu detect": "detect.bin",
-            "mcu motion": "motion.bin",
-            "mcu AC": "AC.bin",
-        }
-        if mcu_name in STANDARD_MCU_FIRMWARE:
-            firmware_file = STANDARD_MCU_FIRMWARE[mcu_name]
+    def _get_firmware_path(self, mcu_name, firmware_name):
+        if firmware_name:
+            firmware_file = firmware_name + '.bin'
             return os.path.join(KLIPPER_DIR, firmware_file)
-        if mcu_name == "mcu tool":
-            TOOL_MCU_FIRMWARE = {
-                "stm32f072xb": "F072_L.bin",
-                "stm32g431xx": "G431_L.bin"
-            }
-            if mcu_type in TOOL_MCU_FIRMWARE:
-                firmware_file = TOOL_MCU_FIRMWARE[mcu_type]
-                return os.path.join(KLIPPER_DIR, firmware_file)
-            else:
-                raise ValueError(f"Unsupported MCU type '{mcu_type}' for 'mcu tool'")
+        return None
 
     async def upgrade_needed_tool_mcus(self):
         for mcu_name, mcu_data in self.mcu_info.items():
-            if mcu_data.get('need_update', False) and mcu_name is not "mcu":
-                firmware_path = self._get_firmware_path(mcu_name, mcu_data.get('mcu_type', ''))
+            if mcu_data.get('need_update', False) and mcu_name != "mcu":
+                firmware_path = self._get_firmware_path(mcu_name, mcu_data.get('firmware_name', ''))
                 if firmware_path and self._check_firmware_exists(firmware_path):
                     self.notifier._set_current_firmware(mcu_name)
                     try:
@@ -264,15 +255,11 @@ class FirmwareUpdate:
                     logging.warning(f"No firmware specified for {mcu_name}, skipping upgrade.")
 
     async def upgrade_mcu(self):
-        MCU_FIRMWARE_MAP = {
-                "stm32f446xx": "F446.bin",
-                "stm32g0b1xx": "G0B1.bin"
-            }
         for mcu_name, mcu_data in self.mcu_info.items():
             if mcu_name == "mcu" and mcu_data.get('need_update', False):
-                firmware_name = MCU_FIRMWARE_MAP.get(mcu_data.get('mcu_type', ''))
-                firmware_path = os.path.join(KLIPPER_DIR, firmware_name)
-                if firmware_name and self._check_firmware_exists(firmware_path):
+                firmware_name = mcu_data.get('firmware_name', '')
+                firmware_path = self._get_firmware_path(mcu_name, firmware_name)
+                if firmware_path and self._check_firmware_exists(firmware_path):
                     self.notifier._set_current_firmware(mcu_name)
                     try:
                         flash_tool = FlashTool(

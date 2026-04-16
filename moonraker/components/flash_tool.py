@@ -445,23 +445,7 @@ class CanFlasher:
         raise FlashError("Error sending command [%s] to Device" % (cmdname))
 
     def _get_mcu_from_path(self):
-        firmware:str = pathlib.Path(self.firmware_path).name
-        file_name = firmware.split('/')[-1]
-        mapping = {
-            "F446": "mcu",
-            "G0B1": "mcu",
-            "F072_L": "lift mcu",
-            "F072_R": "right mcu",
-            "F072": "tool mcu",
-            "G431_L": "tool mcu",
-            "motion": "motion mcu",
-            "detect": "detect mcu",
-            "AC": "AC control mcu"
-        }
-        for key in mapping:
-            if file_name.startswith(key):
-                return mapping[key]
-        return None
+        return pathlib.Path(self.firmware_path).stem
 
     async def send_file(self):
         last_percent = 0
