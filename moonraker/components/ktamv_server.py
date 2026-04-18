@@ -16,10 +16,8 @@ from PIL import Image, ImageDraw, ImageFont
 import matplotlib.font_manager as fm
 from ..utils import json_wrapper as jsonw
 from ..common import RequestType, KlippyState, APITransport
-import time
 import requests
 from requests.exceptions import InvalidURL, ConnectionError
-from dataclasses import dataclass
 # Annotation imports
 from typing import (
     TYPE_CHECKING,
@@ -37,20 +35,12 @@ if TYPE_CHECKING:
 IMG_W, IMG_H = 640, 480
 SAVE_ROOT_DIR = "/tmp/nozzle_detection_results"
 
-@dataclass
-class NozzleAlgo:
-    pre_idx: int
-    detector: cv2.SimpleBlobDetector
-    color: tuple
-    aid: int
 class CameraAglin(APITransport):
     def __init__(self, config: ConfigHelper) -> None:
         super().__init__()
         self.server = config.get_server()
         self.camera_url = config.get("nozzle_cam_url", "http://127.0.0.1/webrtc/api/frame.jpeg?src=Alignment_RAW")
         self.save_image = config.getboolean('save_image', True)
-        self.cv_timeout = config.getfloat('cv_timeout', 20)
-        self.min_matches = config.getint('min_matches', 3)
         self.frame_width = config.getint('frame_width', IMG_W)
         self.frame_height = config.getint('frame_height', IMG_H)
         self.max_frame_rate = config.getint('max_frame_rate', 15)
@@ -71,7 +61,11 @@ class CameraAglin(APITransport):
         self.server.register_event_handler("server:klippy_shutdown", self._handle_klippy_shutdown)
 
         self.camera_handler = CameraStreamHandler(self.camera_url)
-        self.detection_manager = Ktamv_Detection_Manager(self.camera_url, self.save_image)
+        npu_engine = self.server.load_component(config, "npu_inference")
+        self.detection_manager = Ktamv_Detection_Manager(
+            self.camera_url, self.save_image,
+            npu_engine=npu_engine,
+        )
 
         self.server.register_remote_method(
             "get_nozzle_position", self.get_nozzle_position)
@@ -120,8 +114,6 @@ class CameraAglin(APITransport):
                 position = await eventloop.run_in_thread(
                     self.detection_manager.recursively_find_nozzle_position,
                     self._put_frame,
-                    self.min_matches,
-                    self.cv_timeout
                 )
                 runtime = time.time() - start_time
                 if position is not None:
@@ -132,7 +124,7 @@ class CameraAglin(APITransport):
                         "runtime": round(runtime, 3),
                         "message": "Nozzle position detected successfully!"
                     }
-                    logging.info(f"Nozzle detected at {position} in {runtime:.3f}s")
+                    logging.debug(f"Nozzle detected at {position} in {runtime:.3f}s")
                 else:
                     result = {
                         "function": "get_nozzle_position",
@@ -140,7 +132,7 @@ class CameraAglin(APITransport):
                         "runtime": round(runtime, 3),
                         "message": "Failed to detect nozzle position!"
                     }
-                    logging.warning("Nozzle detection returned None")
+                    logging.debug("Nozzle detection returned None")
                 await _notify_result(result)
 
             except asyncio.CancelledError:
@@ -158,7 +150,7 @@ class CameraAglin(APITransport):
                 }
                 await _notify_result(result)
         self._nozzle_detection_task = asyncio.create_task(detection_task())
-        logging.info("Nozzle detection task started")
+        logging.debug("Nozzle detection task started")
 
     async def calculate_camera_to_space_matrix(self, calibration_points: List[Tuple[List[float], List[float]]]) -> None:
         try:
@@ -497,29 +489,20 @@ class CameraStreamHandler:
             self.session = None
 
 class Ktamv_Detection_Manager:
-    uv = [None, None]
-    __algorithm = None
-    CFG = [
-        (0, 'standard', (0, 0, 255), 1),
-        (1, 'standard', (0, 255, 0), 2),
-        (2, 'standard', (39, 255, 127), 3),
-        (3, 'standard', (255, 0, 255), 4),
-        (0, 'relaxed',  (255, 0, 0), 5),
-        (1, 'relaxed',  (39, 127, 255), 6),
-        (2, 'relaxed',  (39, 255, 127), 7),
-        (3, 'relaxed',  (0, 255, 255), 8),
-    ]
     def __init__(self, camera_url, save_image=False, *a, **kw):
         self.__io = CameraStreamHandler(camera_url=camera_url)
-        self._base_params = self._setup_base_params()
-        self._algos = self._build_algorithms()
-        self._success = [0]*(len(self.CFG)+1)
-        self._fail_cnt=0
-        self._last_size=None
-        self._frame_cnt=0
         self.save_image = save_image
         if self.save_image:
             self._creat_save_root()
+
+        npu_engine = kw.get('npu_engine')
+        self._npu_detector = None
+        try:
+            from .npu_inference.nozzle import NPUNozzleDetector
+            self._npu_detector = NPUNozzleDetector(npu_engine)
+            logging.info("NPU detector initialized")
+        except Exception as e:
+            logging.error(f"NPU detector init failed: {e}")
 
     def _creat_save_root(self):
         if not os.path.exists(SAVE_ROOT_DIR):
@@ -549,13 +532,12 @@ class Ktamv_Detection_Manager:
             except Exception as fallback_e:
                 logging.error(f"Both JPEG and PNG save failed: {str(fallback_e)}")
 
-    def recursively_find_nozzle_position(self, put_frame_func, min_matches, timeout):
+    def recursively_find_nozzle_position(self, put_frame_func):
         if self.save_image:
             current_call_dir = self._create_call_dir()
             current_frame_idx = 0
 
-        start, counter, last = time.time(), {}, None
-        while time.time() - start < timeout:
+        for _ in range(2):
             frame = self.__io.get_single_frame()
             if frame is None:
                 logging.error("Failed to get frame from camera")
@@ -566,15 +548,9 @@ class Ktamv_Detection_Manager:
                     self._save_drawn_image(current_call_dir, vis, current_frame_idx)
                     current_frame_idx += 1
                 put_frame_func(vis)
-            if pos is None:
-                continue
-            key = (int(pos[0]), int(pos[1]))
-            counter[key] = counter.get(key, 0) + 1
-            if counter[key] >= min_matches:
-                break
-            last = pos
-            time.sleep(0.3)
-        return last
+            if pos is not None:
+                return pos
+        return None
 
     def get_preview_frame(self, put_frame_func):
         _, vis = self.nozzleDetection(self.__io.get_single_frame())
@@ -584,93 +560,17 @@ class Ktamv_Detection_Manager:
     def nozzleDetection(self, img):
         if img is None:
             return None, None
-        center = self._detect_blob(img)
+        if self._npu_detector:
+            center = self._npu_detector.detect(img)
+        else:
+            logging.error("NPU detector not available")
+            center = None
         vis = self._draw(img.copy(), center)
         return center, vis
-
-    def _setup_base_params(self):
-        return {
-            'standard': {
-                'minArea': 200, 'maxArea': 1000,
-                'minCircularity': 0.8,
-                'minConvexity': 0.8,
-                'filterByArea': True,
-                'filterByCircularity': True,
-                'filterByConvexity': False,
-                'filterByInertia': True,
-                'minInertiaRatio': 0.7
-            },
-            'relaxed': {
-                'minArea': 150, 'maxArea': 1500,
-                'minCircularity': 0.6,
-                'minConvexity': 0.7,
-                'filterByArea': True,
-                'filterByCircularity': True,
-                'filterByConvexity': False,
-                'filterByInertia': True,
-                'minInertiaRatio': 0.5
-            },
-        }
-
-    def _build_algorithms(self):
-        def make(pkey):
-            p = cv2.SimpleBlobDetector_Params()
-            src = self._base_params[pkey]
-            for k, v in src.items():
-                setattr(p, k, v)
-            return cv2.SimpleBlobDetector_create(p)
-        return [NozzleAlgo(pre, make(key), color, aid)
-                for pre, key, color, aid in self.CFG]
-
-    def _preprocess(self, img, idx):
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        if idx == 0:
-            y = cv2.GaussianBlur(gray, (5, 5), 3)
-            return cv2.adaptiveThreshold(y, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                         cv2.THRESH_BINARY, 25, 2)
-        if idx == 1:
-            _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE)
-            return cv2.GaussianBlur(th, (5, 5), 3)
-        if idx == 2:
-            return cv2.medianBlur(gray, 3)
-        return gray
-
-    def _detect_blob(self, img):
-        if self.__algorithm:
-            algo = self._algos[self.__algorithm-1]
-            pt = self._try_algo(img, algo)
-            if pt:
-                self._success[algo.aid] += 1
-                self._fail_cnt = 0
-                return pt
-            self._fail_cnt += 1
-            if self._fail_cnt >= 3:
-                self.__algorithm = None
-        for algo in sorted(self._algos, key=lambda x: self._success[x.aid], reverse=True):
-            pt = self._try_algo(img, algo)
-            if pt:
-                self.__algorithm = algo.aid
-                self._fail_cnt = 0
-                return pt
-        return None
-
-    def _try_algo(self, img, algo):
-        kps = algo.detector.detect(self._preprocess(img, algo.pre_idx))
-        if not kps:
-            return None
-        kp = min(kps, key=lambda k: np.linalg.norm(np.array(k.pt) - np.array([IMG_W//2, IMG_H//2])))
-        x, y, s = kp.pt[0], kp.pt[1], kp.size
-        if not (20 <= x <= IMG_W-20 and 20 <= y <= IMG_H-20):
-            return None
-        if self._last_size and not (0.5 <= s / self._last_size <= 2):
-            return None
-        self._last_size = s
-        return int(round(x)), int(round(y))
 
     def _draw(self, img, center):
         cx, cy = IMG_W//2, IMG_H//2
         if center:
-            cv2.circle(img, center, int(self._last_size//2), (0, 255, 0), -1)
             cv2.line(img, (center[0]-5, center[1]), (center[0]+5, center[1]), (255, 255, 255), 2)
             cv2.line(img, (center[0], center[1]-5), (center[0], center[1]+5), (255, 255, 255), 2)
         else:
