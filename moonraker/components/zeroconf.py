@@ -34,6 +34,24 @@ if TYPE_CHECKING:
 
 ZC_SERVICE_TYPE = "_moonraker._tcp.local."
 
+
+def _get_oem_brand_name() -> str:
+    """Read OEM brand name from MachineConfig.
+    Returns 'CreatBot' if empty, 'CreatLabs' for creatlabs, 'Moonraker' for others.
+    """
+    try:
+        from machine_config import MachineConfig
+        cfg = MachineConfig()
+        oem_name = cfg.get("oem_name", "")
+        if not oem_name:
+            return "CreatBot"
+        if oem_name.lower() == "creatlabs":
+            return "CreatLabs"
+        return "Moonraker"
+    except Exception:
+        return "CreatBot"
+
+
 class AsyncRunner:
     def __init__(self, ip_version: IPVersion) -> None:
         self.ip_version = ip_version
@@ -65,6 +83,7 @@ class AsyncRunner:
 class ZeroconfRegistrar:
     def __init__(self, config: ConfigHelper) -> None:
         self.server = config.get_server()
+        self.brand_name = _get_oem_brand_name()
         hi = self.server.get_host_info()
         self.mdns_name = config.get("mdns_hostname", hi["hostname"])
         addr: str = hi["address"]
@@ -84,7 +103,7 @@ class ZeroconfRegistrar:
                 "machine:net_state_changed", self._update_service)
         self.ssdp_server: Optional[SSDPServer] = None
         if config.getboolean("enable_ssdp", False):
-            self.ssdp_server = SSDPServer(config)
+            self.ssdp_server = SSDPServer(config, self.brand_name)
 
     async def component_init(self) -> None:
         logging.info("Starting Zeroconf services")
@@ -101,7 +120,7 @@ class ZeroconfRegistrar:
         else:
             # Use the UUID.  First 8 hex digits should be unique enough
             instance_name = f"Moonraker-{instance_uuid[:8]}"
-        instance_name = "CreatBot"
+        instance_name = self.brand_name
         hi = self.server.get_host_info()
         host = self.mdns_name
         zc_service_props = {
@@ -175,9 +194,7 @@ class ZeroconfRegistrar:
 
 
 SSDP_ADDR = ("239.255.255.250", 1900)
-SSDP_SERVER_ID = "CreatBot SSDP/UPNP Server"
 SSDP_MAX_AGE = 1800
-SSDP_DEVICE_TYPE = "urn:creatbot-com:device:3dprinter:2"
 SSDP_DEVICE_XML = """
 <?xml version="1.0"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0" configId="{config_id}">
@@ -188,12 +205,12 @@ SSDP_DEVICE_XML = """
     <device>
         <deviceType>{device_type}</deviceType>
         <friendlyName>{friendly_name}</friendlyName>
-        <manufacturer>CreatBot</manufacturer>
-        <manufacturerURL>https://www.creatbot.com</manufacturerURL>
+        <manufacturer>{manufacturer}</manufacturer>
+        <manufacturerURL>{manufacturer_url}</manufacturerURL>
         <modelDescription>API Server for Klipper</modelDescription>
-        <modelName>CreatBot</modelName>
+        <modelName>{model_name}</modelName>
         <modelNumber>{model_number}</modelNumber>
-        <modelURL>https://github.com/CreatBotOfficail</modelURL>
+        <modelURL>{model_url}</modelURL>
         <serialNumber>{serial_number}</serialNumber>
         <UDN>uuid:{device_uuid}</UDN>
         <presentationURL>{presentation_url}</presentationURL>
@@ -201,11 +218,25 @@ SSDP_DEVICE_XML = """
 </root>
 """.strip()
 
+BRAND_URLS = {
+    "CreatBot": {
+        "manufacturer_url": "https://www.creatbot.com",
+        "model_url": "https://github.com/CreatBotOfficail",
+    },
+}
+
 class SSDPServer(asyncio.protocols.DatagramProtocol):
-    def __init__(self, config: ConfigHelper) -> None:
+    def __init__(self, config: ConfigHelper, brand_name: str = "CreatBot") -> None:
         self.server = config.get_server()
+        self.brand_name = brand_name
+        brand_lower = brand_name.lower()
+        self.device_type = f"urn:{brand_lower}-com:device:3dprinter:2"
+        self.server_id = f"{brand_name} SSDP/UPNP Server"
+        brand_urls = BRAND_URLS.get(brand_name, {})
+        self.manufacturer_url = brand_urls.get("manufacturer_url", "")
+        self.model_url = brand_urls.get("model_url", "")
         self.unique_id = uuid.UUID(self.server.get_app_args()["instance_uuid"])
-        self.name: str = "CreatBot"
+        self.name: str = brand_name
         machine: Machine = self.server.lookup_component("machine")
         self.serial_number = machine.get_machine_uuid()
         self.base_url: str = ""
@@ -318,7 +349,7 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
             f"LOCATION: {self.base_url}/server/zeroconf/ssdp",
             "ST: upnp:rootdevice",
             "EXT:",
-            f"SERVER: {SSDP_SERVER_ID}",
+            f"SERVER: {self.server_id}",
             f"CACHE-CONTROL: max-age={SSDP_MAX_AGE}",
             f"BOOTID.UPNP.ORG: {self.boot_id}",
             f"CONFIGID.UPNP.ORG: {self.config_id}",
@@ -335,7 +366,8 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
 
     async def _handle_xml_request(self, web_request: WebRequest) -> str:
         if not self.registered:
-            raise self.server.error("CreatBot SSDP Device not registered", 404)
+            raise self.server.error(
+                f"{self.brand_name} SSDP Device not registered", 404)
         app_args = self.server.get_app_args()
         if "(" in self.name:
             model = self.name.split("(", 1)[-1].rsplit("-", 1)[0].rstrip(")")
@@ -344,10 +376,14 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
         else:
             model = self.name
         return SSDP_DEVICE_XML.format(
-            device_type=SSDP_DEVICE_TYPE,
+            device_type=self.device_type,
             config_id=str(self.config_id),
             friendly_name=self.name,
+            manufacturer=self.brand_name,
+            manufacturer_url=self.manufacturer_url,
+            model_name=self.brand_name,
             model_number=model,
+            model_url=self.model_url,
             serial_number=self.serial_number,
             device_uuid=str(self.unique_id),
             presentation_url=self.base_url
@@ -430,7 +466,7 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
         notify_types = [
             ("upnp:rootdevice", f"uuid:{self.unique_id}::upnp:rootdevice"),
             (f"uuid:{self.unique_id}", f"uuid:{self.unique_id}"),
-            (SSDP_DEVICE_TYPE, f"uuid:{self.serial_number}::{SSDP_DEVICE_TYPE}"),
+            (self.device_type, f"uuid:{self.serial_number}::{self.device_type}"),
         ]
         for (nt, usn) in notify_types:
             notifications.append(
@@ -442,7 +478,7 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
                     f"USN: {usn}",
                     f"LOCATION: {self.base_url}/server/zeroconf/ssdp",
                     "EXT:",
-                    f"SERVER: {SSDP_SERVER_ID}",
+                    f"SERVER: {self.server_id}",
                     f"CACHE-CONTROL: max-age={SSDP_MAX_AGE}",
                     f"BOOTID.UPNP.ORG: {self.boot_id}",
                     f"CONFIGID.UPNP.ORG: {self.config_id}",
