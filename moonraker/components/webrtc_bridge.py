@@ -173,8 +173,8 @@ class WebRTCBridge:
                 if pkt_type == "webrtc/candidate":
                     data = self._parse_ice_candidate(pkt_value)
                     await self._publish_sdp_to_app(msg_uuid, data)
-                elif pkt_type == "webrtc/answer":
-                    logging.debug("Unexpected late webrtc/answer from go2rtc")
+                elif pkt_type == "webrtc":
+                    logging.debug("Unexpected late webrtc answer from go2rtc")
                 else:
                     logging.debug(f"Ignoring unsupported go2rtc ws message: {packet}")
         except asyncio.CancelledError:
@@ -227,6 +227,7 @@ class WebRTCBridge:
         if not sdp:
             return {"type": "error", "message": "Missing SDP in offer_trickle"}
         cameras = self._parse_cameras(data.get("cameras"))
+        ice_servers = data.get("ice_servers")
 
         await self._close_session(msgUUID)
         pending_session = TrickleSession(None, msgUUID, cameras)
@@ -239,11 +240,18 @@ class WebRTCBridge:
             ws = await tornado.websocket.websocket_connect(
                 ws_url, connect_timeout=self.ws_timeout
             )
-            await ws.write_message(jsonw.dumps({
-                "type": "webrtc/offer",
-                "value": sdp,
+            offer_value: Dict[str, Any] = {
+                "type": "offer",
+                "sdp": sdp,
+            }
+            if ice_servers:
+                offer_value["ice_servers"] = ice_servers
+            offer_msg: Dict[str, Any] = {
+                "type": "webrtc",
+                "value": offer_value,
                 "X-MQTT-User": msgUUID,
-            }))
+            }
+            await ws.write_message(jsonw.dumps(offer_msg))
 
             for candidate in pending_session.pending_candidates:
                 await ws.write_message(jsonw.dumps({
@@ -263,10 +271,11 @@ class WebRTCBridge:
                 packet = jsonw.loads(message)
                 pkt_type = packet.get("type")
                 pkt_value = packet.get("value", "")
-                if pkt_type == "webrtc/answer":
+                if pkt_type == "webrtc":
+                    answer_sdp = pkt_value.get("sdp", "") if isinstance(pkt_value, dict) else pkt_value
                     pending_session.ws = ws
                     pending_session.reader_task = asyncio.create_task(self._ws_reader(pending_session))
-                    return {"type": "answer_trickle", "sdp": pkt_value}
+                    return {"type": "answer_trickle", "sdp": answer_sdp}
                 if pkt_type == "webrtc/candidate":
                     data_ice = self._parse_ice_candidate(pkt_value)
                     await self._publish_sdp_to_app(msgUUID, data_ice)
