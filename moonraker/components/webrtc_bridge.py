@@ -29,6 +29,7 @@ class TrickleSession:
         self.created_time: float = time.time()
         self.last_activity: float = time.time()
         self.pending_candidates: List[str] = []
+        self.answer_future: asyncio.Future = asyncio.get_running_loop().create_future()
 
 
 class WebRTCBridge:
@@ -100,11 +101,11 @@ class WebRTCBridge:
             await asyncio.sleep(self.CLEANUP_INTERVAL)
             current_time = time.time()
             expired = [
-                uuid for uuid, session in self.sessions.items()
+                (uuid, session) for uuid, session in self.sessions.items()
                 if current_time - session.last_activity > self.session_timeout
             ]
-            for uuid in expired:
-                await self._close_session(uuid)
+            for uuid, session in expired:
+                await self._close_session(uuid, expected_session=session)
                 logging.info("Expired session closed: %s", uuid)
 
     async def component_init(self) -> None:
@@ -135,10 +136,15 @@ class WebRTCBridge:
         topic = self._get_topic_for_uuid(msg_uuid)
         await self.mqtt.publish_topic(topic, payload, self.mqtt.api_qos)
 
-    async def _close_session(self, msg_uuid: str) -> None:
-        session = self.sessions.pop(msg_uuid, None)
+    async def _close_session(self, msg_uuid: str,
+                            expected_session: Optional[TrickleSession] = None) -> None:
+        session = self.sessions.get(msg_uuid)
         if session is None:
             return
+
+        if expected_session is not None and session is not expected_session:
+            return
+        self.sessions.pop(msg_uuid, None)
         if session.reader_task is not None:
             current = asyncio.current_task()
             if session.reader_task is not current:
@@ -159,6 +165,9 @@ class WebRTCBridge:
             while True:
                 message = await session.ws.read_message()
                 if message is None:
+                    if not session.answer_future.done():
+                        session.answer_future.set_exception(
+                            RuntimeError("go2rtc websocket closed before answer"))
                     break
                 session.last_activity = time.time()
                 if not isinstance(message, str):
@@ -174,15 +183,21 @@ class WebRTCBridge:
                     data = self._parse_ice_candidate(pkt_value)
                     await self._publish_sdp_to_app(msg_uuid, data)
                 elif pkt_type == "webrtc":
-                    logging.debug("Unexpected late webrtc answer from go2rtc")
+                    if not session.answer_future.done():
+                        answer_sdp = pkt_value.get("sdp", "") if isinstance(pkt_value, dict) else pkt_value
+                        session.answer_future.set_result(answer_sdp)
+                    else:
+                        logging.debug("Unexpected late webrtc answer from go2rtc")
                 else:
                     logging.debug(f"Ignoring unsupported go2rtc ws message: {packet}")
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as e:
+            if not session.answer_future.done():
+                session.answer_future.set_exception(e)
             logging.exception("go2rtc WebSocket reader failed")
         finally:
-            await self._close_session(msg_uuid)
+            await self._close_session(msg_uuid, expected_session=session)
 
     async def _handle_http_offer(self, data: Dict[str, Any], msgUUID: str) -> Dict[str, Any]:
         await self._close_session(msgUUID)
@@ -237,9 +252,9 @@ class WebRTCBridge:
         ws: Optional[WebSocketClientConnection] = None
         try:
             logging.debug(f"Connecting go2rtc websocket: {ws_url}")
-            ws = await tornado.websocket.websocket_connect(
-                ws_url, connect_timeout=self.ws_timeout
-            )
+            request = HTTPRequest(ws_url, headers={"X-MQTT-User": msgUUID}, connect_timeout=self.ws_timeout)
+            ws = await tornado.websocket.websocket_connect(request)
+            pending_session.ws = ws
             offer_value: Dict[str, Any] = {
                 "type": "offer",
                 "sdp": sdp,
@@ -249,7 +264,6 @@ class WebRTCBridge:
             offer_msg: Dict[str, Any] = {
                 "type": "webrtc",
                 "value": offer_value,
-                "X-MQTT-User": msgUUID,
             }
             await ws.write_message(jsonw.dumps(offer_msg))
 
@@ -260,29 +274,22 @@ class WebRTCBridge:
                 }))
             pending_session.pending_candidates.clear()
 
-            while True:
-                message = await asyncio.wait_for(
-                    ws.read_message(), timeout=self.ws_timeout
-                )
-                if message is None:
-                    raise RuntimeError("go2rtc websocket closed before answer")
-                if not isinstance(message, str):
-                    continue
-                packet = jsonw.loads(message)
-                pkt_type = packet.get("type")
-                pkt_value = packet.get("value", "")
-                if pkt_type == "webrtc":
-                    answer_sdp = pkt_value.get("sdp", "") if isinstance(pkt_value, dict) else pkt_value
-                    pending_session.ws = ws
-                    pending_session.reader_task = asyncio.create_task(self._ws_reader(pending_session))
-                    return {"type": "answer_trickle", "sdp": answer_sdp}
-                if pkt_type == "webrtc/candidate":
-                    data_ice = self._parse_ice_candidate(pkt_value)
-                    await self._publish_sdp_to_app(msgUUID, data_ice)
+            pending_session.reader_task = asyncio.create_task(self._ws_reader(pending_session))
+
+            answer_sdp = await asyncio.wait_for(
+                pending_session.answer_future, timeout=self.ws_timeout)
+            return {"type": "answer_trickle", "sdp": answer_sdp}
         except Exception as e:
-            logging.error(f"WebSocket trickle mode failed: {e}")
-            self.sessions.pop(msgUUID, None)
-            if ws is not None:
+            import traceback
+            logging.error(f"WebSocket trickle mode failed: [{type(e).__name__}] {e!r}\n{traceback.format_exc()}")
+            if self.sessions.get(msgUUID) is pending_session:
+                if pending_session.reader_task is not None:
+                    pending_session.reader_task.cancel()
+                else:
+                    self.sessions.pop(msgUUID, None)
+                    if ws is not None:
+                        ws.close()
+            elif ws is not None:
                 ws.close()
             return {"type": "error", "message": str(e)}
 
@@ -300,7 +307,7 @@ class WebRTCBridge:
             await session.ws.write_message(jsonw.dumps(payload))
         except Exception as e:
             logging.error(f"Failed to forward ICE candidate to go2rtc: {e}")
-            await self._close_session(msgUUID)
+            await self._close_session(msgUUID, expected_session=session)
             return {"type": "error", "message": str(e)}
         return None
 
