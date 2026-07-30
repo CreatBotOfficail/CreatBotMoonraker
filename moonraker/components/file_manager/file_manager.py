@@ -755,6 +755,7 @@ class FileManager:
             path_info = self.get_path_info(full_path, root)
             if os.path.isdir(full_path):
                 path_info['dirname'] = fname
+                path_info['mounted'] = os.path.ismount(full_path)
                 flist['dirs'].append(path_info)
             elif os.path.isfile(full_path):
                 path_info['filename'] = fname
