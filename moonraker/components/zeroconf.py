@@ -423,6 +423,8 @@ class SSDPServer(asyncio.protocols.DatagramProtocol):
             logging.exception("Data Decode Error")
             return
         hlines = header.splitlines()
+        if not hlines:
+            return
         ssdp_command = hlines[0].strip()
         headers = {}
         for line in hlines[1:]:
