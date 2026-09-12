@@ -38,8 +38,8 @@ if TYPE_CHECKING:
     StrOrPath = Union[str, pathlib.Path]
 
 ESTIMATOR_URL = (
-    "https://github.com/Annex-Engineering/klipper_estimator/"
-    "releases/latest/download/{asset}"
+    "http://gitea.creatbot.com/CreatBot/klipper_estimator/"
+    "releases/download/v1.0.0/{asset}"
 )
 UPDATE_CONFIG = {
     "type": "executable",
