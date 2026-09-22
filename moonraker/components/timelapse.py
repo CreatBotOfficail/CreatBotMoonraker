@@ -18,7 +18,9 @@ from zipfile import ZipFile
 from typing import (
     TYPE_CHECKING,
     Dict,
-    Any
+    Any,
+    Optional,
+    Tuple
 )
 if TYPE_CHECKING:
     from confighelper import ConfigHelper
@@ -576,6 +578,34 @@ class Timelapse:
         ioloop = IOLoop.current()
         ioloop.spawn_callback(self.render)
 
+    def _get_webcam_rotation(self) -> Tuple[int, Optional[str]]:
+        camname = self.config.get('camera', "")
+        try:
+            webcam_mgr: WebcamManager = self.server.lookup_component("webcam")
+            webcams = webcam_mgr.webcams
+        except Exception:
+            logging.exception("timelapse: failed to lookup webcam component")
+            return 0, None
+        if not camname and len(webcams) == 1:
+            # Fall back to the only registered webcam
+            camname = next(iter(webcams))
+        if not camname or camname not in webcams:
+            return 0, None
+        rotation = getattr(webcams[camname], "rotation", 0)
+        return (rotation if rotation in (90, 180, 270) else 0), camname
+
+    def _get_effective_rotation(self) -> int:
+        if 'rotation' in self.config.get('blockedsettings', []):
+            return self.config['rotation']
+        rotation, camname = self._get_webcam_rotation()
+        if camname is not None:
+            if rotation:
+                logging.info(
+                    f"timelapse: render rotation {rotation} derived "
+                    f"from webcam '{camname}'")
+            return rotation
+        return self.config['rotation']
+
     async def render(self, webrequest=None):
         filelist = sorted(glob.glob(self.temp_dir + "frame*.jpg"))
         self.framecount = len(filelist)
@@ -645,16 +675,17 @@ class Timelapse:
             pipeline_parts.append("! videoconvert")
 
             # rotation/flip logic
-            if self.config['rotation'] == 90 and self.config['flip_y']:
+            effective_rotation = self._get_effective_rotation()
+            if effective_rotation == 90 and self.config['flip_y']:
                 pipeline_parts.append("! videoflip method=upper-left-diagonal")
-            elif self.config['rotation'] == 90:
+            elif effective_rotation == 90:
                 pipeline_parts.append("! videoflip method=clockwise")
-            elif self.config['rotation'] == 180:
+            elif effective_rotation == 180:
                 pipeline_parts.append("! videoflip method=rotate-180")
-            elif self.config['rotation'] == 270 and self.config['flip_y']:
+            elif effective_rotation == 270 and self.config['flip_y']:
                 pipeline_parts.append("! videoflip method=lower-left-diagonal")
-            elif self.config['rotation'] == 270:
-                pipeline_parts.append("! videoflip method=counter-clockwise")
+            elif effective_rotation == 270:
+                pipeline_parts.append("! videoflip method=counterclockwise")
             elif self.config['flip_x'] and self.config['flip_y']:
                 pipeline_parts.append("! videoflip method=rotate-180")
             elif self.config['flip_x']:
