@@ -69,8 +69,8 @@ class Timelapse:
 
         # Setup default config
         self.config: Dict[str, Any] = {
-            'enabled': True,
-            'mode': "layermacro",
+            'enabled': False,
+            'mode': "hyperlapse",
             'camera': "",
             'snapshoturl': "http://localhost/webrtc/api/frame.jpeg?src=Camera_JPEG",
             'stream_delay_compensation': 0.05,
@@ -87,7 +87,7 @@ class Timelapse:
             'park_extrude_distance': 1.0,
             'park_time': 0.1,
             'fw_retract': False,
-            'hyperlapse_cycle': 30,
+            'hyperlapse_cycle': 60,
             'autorender': True,
             'constant_rate_factor': 23,
             'output_framerate': 30,
