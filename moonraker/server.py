@@ -15,6 +15,7 @@ import io
 import time
 import socket
 import logging
+import tempfile
 import signal
 import asyncio
 import uuid
@@ -66,6 +67,37 @@ CORE_COMPONENTS = [
 ]
 
 
+def set_temp_dir(temp_dir: str) -> bool:
+    """Redirect the process temporary directory to ``temp_dir``.
+
+    ``tempfile.gettempdir()`` defaults to ``/tmp``, which on this hardware is a
+    tmpfs sized at 50% of physical RAM.  Every temporary file the server
+    creates is therefore capped by RAM (upload staging, update downloads,
+    metadata processing, ...), and leftovers only disappear on reboot.
+
+    ``tempfile.tempdir`` is the documented module global consulted by
+    ``gettempdir()``, ``gettempdirb()``, ``mkstemp()``, ``mkdtemp()``,
+    ``NamedTemporaryFile()`` and ``TemporaryDirectory()``, so a single
+    assignment moves *all* of them at once.
+
+    Returns True when the redirect was applied.
+    """
+    temp_dir = temp_dir.strip()
+    if not temp_dir:
+        return False
+    try:
+        path = pathlib.Path(os.path.expanduser(temp_dir)).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logging.warning(
+            f"[server]: unable to use temp_dir '{temp_dir}' ({e}), "
+            f"temporary files stay in {tempfile.gettempdir()}")
+        return False
+    tempfile.tempdir = str(path)
+    logging.info(f"[server]: temporary files are created in {path}")
+    return True
+
+
 class Server:
     error = ServerError
     config_error = confighelper.ConfigError
@@ -84,6 +116,7 @@ class Server:
         self._is_configured: bool = False
 
         self.config = config = self._parse_config()
+        set_temp_dir(config.get('temp_dir', ''))
         self.host: str = config.get('host', "0.0.0.0")
         self.port: int = config.getint('port', 7125)
         self.ssl_port: int = config.getint('ssl_port', 7130)
