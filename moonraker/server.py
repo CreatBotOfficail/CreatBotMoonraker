@@ -85,10 +85,10 @@ class Server:
         self._is_configured: bool = False
 
         self.config = config = self._parse_config()
-        temp_dir = config.get('temp_dir', '')
         self.host: str = config.get('host', "0.0.0.0")
         self.port: int = config.getint('port', 7125)
         self.ssl_port: int = config.getint('ssl_port', 7130)
+        self.temp_dir = config.get('temp_dir', '')
         self.exit_reason: str = ""
         self.server_running: bool = False
         self.app_running_evt = asyncio.Event()
@@ -102,7 +102,8 @@ class Server:
         self.event_loop.set_debug(args["asyncio_debug"])
 
         # Apply the configured temp dir before components create files
-        self._set_temp_dir(temp_dir)
+        self._set_temp_dir(self.temp_dir)
+
         self.klippy_connection: KlippyConnection
         self.klippy_connection = self.load_component(config, "klippy_connection")
 
