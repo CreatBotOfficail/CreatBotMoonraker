@@ -1,21 +1,25 @@
-# Cache maintenance API for the CreatBot platform
+# Cache maintenance API for the CreatBot platform.
 #
-# 打印机上有几处目录会随使用无限增长，占满后会直接导致上传或延时摄影失败：
-#   upload_tmp        Moonraker 上传暂存目录（= 进程临时目录，见 [server] temp_dir）
-#                     断电/断网导致上传中断时，暂存文件不会被上游清理，
-#                     会一直占空间（/tmp 场景下甚至占的是内存）
-#   timelapse_frames  延时摄影原始帧目录（timelapse 组件注册的 timelapse_frames）
-#   gcode_thumbs      G-Code 缩略图缓存（<gcodes>/.thumbs，可自动重建）
+# Three directories grow without bound and can make uploads or timelapse fail
+# once they fill up:
+#   upload_tmp        Moonraker upload staging dir (= process temp dir, see
+#                     [server] temp_dir); leftovers of an aborted upload are
+#                     never removed by upstream code.
+#   timelapse_frames  raw timelapse frames (registered by the timelapse
+#                     component); upstream only cleans them after a
+#                     successful render or save.
+#   gcode_thumbs      G-Code thumbnail cache (<gcodes>/.thumbs, rebuildable).
 #
-# 对外提供查询与清理接口，并在 Klipper 就绪时清理过期的上传暂存文件。
+# Provides query/cleanup endpoints and removes stale upload temp files when
+# Klipper becomes ready.
 #
-# 接口：
+# API:
 #   GET  /server/cache/info
 #        -> {"targets": {name: {path, exists, size, files}}, "total_size": N}
 #   POST /server/cache/cleanup
-#        body: {"targets": "upload_tmp,timelapse_frames"}   # 逗号分隔
-#              {"all": true}                                # = upload_tmp + timelapse_frames
-#              {"min_age": 300}                             # 只删早于 N 秒的文件
+#        body: {"targets": "upload_tmp,timelapse_frames"}  (comma separated)
+#              {"all": true}          # upload_tmp + timelapse_frames only
+#              {"min_age": 300}       # only files older than N seconds
 #        -> {"freed": {...}, "removed": {...}, "skipped": {...},
 #            "errors": {...}, "total_freed": N}
 #
@@ -48,10 +52,10 @@ UPLOAD_TMP = "upload_tmp"
 TIMELAPSE_FRAMES = "timelapse_frames"
 GCODE_THUMBS = "gcode_thumbs"
 ALL_TARGETS = (UPLOAD_TMP, TIMELAPSE_FRAMES, GCODE_THUMBS)
-# all=true 时处理的目标；thumb 会让前端丢缩略图，必须显式指定
+# dropped by all=true; thumbs remove UI previews, so they are opt-in
 DEFAULT_TARGETS = (UPLOAD_TMP, TIMELAPSE_FRAMES)
-# 上传暂存文件的最小保留时间：正在上传的文件 mtime 一直在更新，
-# 只有断电/断网遗留的旧文件才会被清掉
+# Minimum age for upload temp files: an in-flight upload keeps updating
+# its mtime, so only leftovers of an aborted upload are removed
 DEFAULT_MIN_AGE = 300
 THUMB_MIN_AGE = 60
 
@@ -83,7 +87,7 @@ class CreatBotCache:
     def _get_targets(self) -> Dict[str, Tuple[str, str]]:
         """Return {target: (directory, file pattern)} for the available areas."""
         targets: Dict[str, Tuple[str, str]] = {}
-        # 上传暂存目录就是进程临时目录（由 [server] temp_dir 统一配置）
+        # Upload staging dir is the process temp dir ([server] temp_dir)
         targets[UPLOAD_TMP] = (
             tempfile.gettempdir(), "moonraker.upload-*.mru")
         fm = self._get_file_manager()

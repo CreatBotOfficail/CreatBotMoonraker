@@ -67,40 +67,6 @@ CORE_COMPONENTS = [
 ]
 
 
-def set_temp_dir(temp_dir: str) -> bool:
-    """Redirect the process temporary directory to ``temp_dir``.
-
-    ``tempfile.gettempdir()`` defaults to ``/tmp``, which on this hardware is a
-    tmpfs sized at 50% of physical RAM.  Every temporary file the server
-    creates is therefore capped by RAM (upload staging, update downloads,
-    metadata processing, ...), and leftovers only disappear on reboot.
-
-    ``tempfile.tempdir`` is the documented module global consulted by
-    ``gettempdir()``, ``gettempdirb()``, ``mkstemp()``, ``mkdtemp()``,
-    ``NamedTemporaryFile()`` and ``TemporaryDirectory()``, so a single
-    assignment moves *all* of them at once.  ``TMPDIR`` is exported as well
-    so that helper processes (metadata.py, klipper_estimator, ...) inherit
-    the same directory.
-
-    Returns True when the redirect was applied.
-    """
-    temp_dir = temp_dir.strip()
-    if not temp_dir:
-        return False
-    try:
-        path = pathlib.Path(os.path.expanduser(temp_dir)).resolve()
-        path.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        logging.warning(
-            f"[server]: unable to use temp_dir '{temp_dir}' ({e}), "
-            f"temporary files stay in {tempfile.gettempdir()}")
-        return False
-    tempfile.tempdir = str(path)
-    os.environ["TMPDIR"] = str(path)
-    logging.info(f"[server]: temporary files are created in {path}")
-    return True
-
-
 class Server:
     error = ServerError
     config_error = confighelper.ConfigError
@@ -119,7 +85,7 @@ class Server:
         self._is_configured: bool = False
 
         self.config = config = self._parse_config()
-        set_temp_dir(config.get('temp_dir', ''))
+        temp_dir = config.get('temp_dir', '')
         self.host: str = config.get('host', "0.0.0.0")
         self.port: int = config.getint('port', 7125)
         self.ssl_port: int = config.getint('ssl_port', 7130)
@@ -134,6 +100,9 @@ class Server:
         log_level = logging.DEBUG if args["verbose"] else logging.INFO
         logging.getLogger().setLevel(log_level)
         self.event_loop.set_debug(args["asyncio_debug"])
+
+        # Apply the configured temp dir before components create files
+        self._set_temp_dir(temp_dir)
         self.klippy_connection: KlippyConnection
         self.klippy_connection = self.load_component(config, "klippy_connection")
 
@@ -210,6 +179,37 @@ class Server:
         strio.close()
         self.add_log_rollover_item('config', cfg_item)
         return config
+
+    def _set_temp_dir(self, temp_dir: str) -> None:
+        """Apply the [server] temp_dir setting to the whole process.
+
+        tempfile.tempdir is the module global used by gettempdir(), mkstemp(),
+        mkdtemp(), NamedTemporaryFile() and TemporaryDirectory(), so a single
+        assignment moves every temporary file of this process.  TMPDIR is
+        exported as well so that helper processes inherit it.
+        """
+        temp_dir = temp_dir.strip()
+        if not temp_dir:
+            self.add_warning(
+                "No 'temp_dir' configured, temporary files use the system "
+                "default directory. Large uploads, and timelapse when "
+                "enabled, may fail when that directory is too small, and "
+                "this may also affect print stability.", warn_id="temp_dir")
+            return
+        path = pathlib.Path(os.path.expanduser(temp_dir)).resolve()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.add_warning(
+                f"Unable to use 'temp_dir' ({temp_dir}): {e}, temporary "
+                f"files use {tempfile.gettempdir()} instead. Large uploads, "
+                f"and timelapse when enabled, may fail when that directory "
+                f"is too small, and this may also affect print stability.",
+                warn_id="temp_dir", exc_info=e)
+            return
+        tempfile.tempdir = str(path)
+        os.environ["TMPDIR"] = str(path)
+        logging.info(f"[server]: temporary files are created in {path}")
 
     async def server_init(self, start_server: bool = True) -> None:
         self.event_loop.add_signal_handler(
