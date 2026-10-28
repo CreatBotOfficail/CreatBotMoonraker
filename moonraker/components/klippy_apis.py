@@ -153,6 +153,7 @@ class KlippyAPI(APITransport):
         script = f'SDCARD_PRINT_FILE FILENAME="{filename}"'
         if wait_klippy_started:
             await self.klippy.wait_started()
+        await self._check_required_filament(filename)
         ret = await self.run_gcode("_START_PRINT_BASE")
         try:
             result = await self.query_objects({"gcode_macro _START_PRINT_BASE": None}, None)
@@ -170,6 +171,77 @@ class KlippyAPI(APITransport):
             logging.info("can not start print, canceling print job.")
             self.server.send_event("klippy_apis:cancel_requested", user)
         return ret
+
+    async def _check_required_filament(self, filename: str) -> None:
+        """Refuse to start the job when an extruder required by the file
+        has no filament loaded.
+        """
+        fmngr = self.server.lookup_component('file_manager')
+        try:
+            metadata: Dict[str, Any] = fmngr.get_metadata_storage().get(
+                filename)
+        except Exception:
+            metadata = {}
+        if not metadata:
+            # Without metadata the required extruders cannot be determined
+            return
+        required = set()
+        filament_weights = metadata.get('filament_weights')
+        if isinstance(filament_weights, list) and filament_weights:
+            for tool, weight in enumerate(filament_weights):
+                if (weight or 0.) > 0.:
+                    required.add(tool)
+        else:
+            filament_temps = metadata.get('filament_temps')
+            if isinstance(filament_temps, list) and filament_temps:
+                for tool, temp in enumerate(filament_temps):
+                    if (temp or 0) > 0:
+                        required.add(tool)
+            elif (metadata.get('first_layer_extr_temp') or 0.) > 0.:
+                required.add(0)
+        if not required:
+            return
+        try:
+            client = await self.query_objects(
+                {"gcode_macro _CLIENT_VARIABLE": None}, None)
+            client_vars = client.get("gcode_macro _CLIENT_VARIABLE", {})
+        except Exception:
+            client_vars = {}
+        sensor_map = {0: client_vars.get("filament_sensor11", ""),
+                      1: client_vars.get("filament_sensor21", "")}
+        query = {}
+        for tool in required:
+            name = sensor_map.get(tool, "")
+            if name:
+                query[name] = None
+        if not query:
+            # No filament sensor configured for any required tool
+            return
+        result = await self.query_objects(query, None)
+        if not result:
+            return
+        for tool in required:
+            sensor_name = sensor_map.get(tool, "")
+            status = result.get(sensor_name) if sensor_name else None
+            if not status:
+                # Sensor not configured: assume filament present
+                continue
+            if not status.get('enabled', False):
+                # Sensor disabled by the user: allow printing without
+                # filament
+                continue
+            if not status.get('filament_detected', False):
+                msg = "Left" if tool == 0 else "Right"
+                await self.run_gcode(
+                    'RESPOND TYPE=error MSG="Notice! '
+                    f'{msg} extruder filament has run out."')
+                logging.info(
+                    f"Refusing to start print '{filename}', no filament "
+                    f"detected on required {msg} extruder"
+                    f"({sensor_name})")
+                raise self.server.error(
+                    f"Unable to start print, no filament loaded on "
+                    f"{msg} extruder", 400)
 
     async def pause_print(
         self, default: Union[Sentinel, _T] = Sentinel.MISSING
