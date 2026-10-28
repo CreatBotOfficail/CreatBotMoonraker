@@ -5,10 +5,11 @@
 #   upload_tmp        Moonraker upload staging dir (= process temp dir, see
 #                     [server] temp_dir); leftovers of an aborted upload are
 #                     never removed by upstream code.
-#   timelapse_frames  raw timelapse frames (registered by the timelapse
-#                     component); upstream only cleans them after a
+#   timelapse_frames  raw timelapse frames ([timelapse] frame_path, see
+#                     base.conf); upstream only cleans them after a
 #                     successful render or save.
-#   gcode_thumbs      G-Code thumbnail cache (<gcodes>/.thumbs, rebuildable).
+#   gcode_thumbs      G-Code thumbnail caches (<gcodes>/**/.thumbs,
+#                     rebuildable).
 #
 # Provides query/cleanup endpoints and removes stale upload temp files when
 # Klipper becomes ready.
@@ -28,7 +29,6 @@
 
 from __future__ import annotations
 import logging
-import os
 import pathlib
 import tempfile
 import time
@@ -95,11 +95,12 @@ class CreatBotCache:
             return targets
         timelapse_dir = fm.get_directory("timelapse_frames")
         if timelapse_dir:
-            targets[TIMELAPSE_FRAMES] = (timelapse_dir, "*")
+            # only frames; the render intermediate (*.mp4) lives there too
+            targets[TIMELAPSE_FRAMES] = (timelapse_dir, "frame*.jpg")
         gcodes_dir = fm.get_directory("gcodes")
         if gcodes_dir:
-            targets[GCODE_THUMBS] = (
-                os.path.join(gcodes_dir, ".thumbs"), "*")
+            # metadata.py writes thumbs next to each gcode, so walk the tree
+            targets[GCODE_THUMBS] = (gcodes_dir, "**/.thumbs/*")
         return targets
 
     @staticmethod
