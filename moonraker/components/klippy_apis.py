@@ -207,8 +207,12 @@ class KlippyAPI(APITransport):
             client_vars = client.get("gcode_macro _CLIENT_VARIABLE", {})
         except Exception:
             client_vars = {}
-        sensor_map = {0: client_vars.get("filament_sensor11", ""),
-                      1: client_vars.get("filament_sensor21", "")}
+        sensor_map = {
+            tool: next((client_vars[name] for name in names
+                        if client_vars.get(name)), "")
+            for tool, names in ((0, ("filament_sensor11", "filament_sensor")),
+                                (1, ("filament_sensor21", "filament_sensor1")))
+        }
         query = {}
         for tool in required:
             name = sensor_map.get(tool, "")
@@ -232,9 +236,9 @@ class KlippyAPI(APITransport):
                 continue
             if not status.get('filament_detected', False):
                 msg = "Left" if tool == 0 else "Right"
-                await self.run_gcode(
-                    'RESPOND TYPE=error MSG="Notice! '
-                    f'{msg} extruder filament has run out."')
+                await self._notify_print_start_refused(
+                    f"Unable to start print, no filament loaded on "
+                    f"{msg} extruder")
                 logging.info(
                     f"Refusing to start print '{filename}', no filament "
                     f"detected on required {msg} extruder"
@@ -242,6 +246,22 @@ class KlippyAPI(APITransport):
                 raise self.server.error(
                     f"Unable to start print, no filament loaded on "
                     f"{msg} extruder", 400)
+
+    async def _notify_print_start_refused(self, message: str) -> None:
+        commands = (
+            'RESPOND TYPE=command MSG="action:prompt_begin '
+            'Unable to Start Print"',
+            'RESPOND TYPE=command MSG="action:prompt_text '
+            f'{message}"',
+            'RESPOND TYPE=command MSG="action:prompt_footer_button '
+            'Ok|RESPOND TYPE=command MSG=action:prompt_end"',
+            'RESPOND TYPE=command MSG="action:prompt_show"',
+        )
+        try:
+            for command in commands:
+                await self.run_gcode(command)
+        except Exception:
+            logging.exception("Error sending print start prompt")
 
     async def pause_print(
         self, default: Union[Sentinel, _T] = Sentinel.MISSING
