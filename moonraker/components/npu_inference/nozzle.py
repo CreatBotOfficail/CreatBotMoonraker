@@ -178,11 +178,14 @@ class NPUNozzleDetector:
             return None
 
         best = max(dets, key=lambda d: d["score"])
-        cx = int(round(best["center"][0]))
-        cy = int(round(best["center"][1]))
+        return self._to_center(best["center"][0], best["center"][1], orig_shape)
 
+    @staticmethod
+    def _to_center(cx: float, cy: float, orig_shape: Tuple[int, int]) -> Optional[Tuple[int, int]]:
+        """Same rounding and border filter as the previous implementation."""
+        icx = int(round(cx))
+        icy = int(round(cy))
         h, w = orig_shape
-        if not (5 <= cx <= w - 5 and 5 <= cy <= h - 5):
+        if not (5 <= icx <= w - 5 and 5 <= icy <= h - 5):
             return None
-
-        return cx, cy
+        return icx, icy
